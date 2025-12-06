@@ -4,7 +4,7 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        //var bot = new TelegramBot();
-        //await bot.RunBot();
+        var bot = new TelegramBot();
+        await bot.RunBot();
     }
 }
