@@ -52,7 +52,10 @@ namespace order_bot
                 {
                     new[]
                     {
-                        InlineKeyboardButton.WithCallbackData("Сотрудник", "employee"),
+                        InlineKeyboardButton.WithCallbackData("Сотрудник", "employee")
+                    },
+                    new[]
+                    {
                         InlineKeyboardButton.WithCallbackData("Менеджер", "manager")
                     }
                 });
@@ -82,6 +85,10 @@ namespace order_bot
                         {
                             _userRoles[query.From.Id] = "employee";
                             await _botClient.SendMessage(query.Message.Chat, "Успешно");
+                            var currentEmployee = new Employee();
+                            currentEmployee = db.GetEmployeeByTelegramId(query.From.Id);
+
+                            await ShowEmployeeMainMenu(query, currentEmployee);
                         }
                         else
                         {
@@ -120,26 +127,85 @@ namespace order_bot
         {
             var role = GetUserRole(msg.From.Id);
 
-            
-            if (msg.Text == "/help")
+            if (role == "employee")
             {
-                var helpText = role == "manager"
-                    ? "Команды менеджера: /orders, /statistics"
-                    : "Команды сотрудника: /tasks, /report";
+                var currentEmployee = new Employee();
+                using (var db = new EmployeesDatabaseManager()) 
+                {
+                    currentEmployee = db.GetEmployeeByTelegramId(msg.From.Id);
+                }
 
-                await _botClient.SendMessage(msg.Chat, helpText);
-            }
-            else if (msg.Text == "/logout")
-            {
-                _userRoles.Remove(msg.From.Id);
-                await _botClient.SendMessage(msg.Chat, "Вы вышли из системы. Используйте /start для повторной авторизации.");
+                if (msg.Text == "/help")
+                {
+                    var helpText = "Команды /help, /logout";
+
+                    await _botClient.SendMessage(msg.Chat, helpText);
+                }
+                else if (msg.Text == "/logout")
+                {
+                    _userRoles.Remove(msg.From.Id);
+                    await _botClient.SendMessage(msg.Chat, "Вы вышли из системы. Используйте /start для повторной авторизации.");
+                }
+                else
+                {
+                    await ShowEmployeeMainMenu(msg, currentEmployee);
+                }
             }
             else
             {
-                await _botClient.SendMessage(msg.Chat, $"Вы авторизованы как {role}. Ваше сообщение: {msg.Text}");
+                throw new NotImplementedException();
             }
         }
 
+        private async Task ShowEmployeeMainMenu(Message msg, Employee currentEmployee)
+        {
+            var keyboard = new InlineKeyboardMarkup(new[]
+                {
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Выбрать ресторан", "showRestoraunt")
+                    },
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Посмотреть заказ", "showOrder")
+                    },
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Подтвердить заказ", "confirmOrder")
+                    }
+                });
+
+            await _botClient.SendMessage(
+                msg.Chat,
+                $"Вы авторизованы как сотрудник\n{currentEmployee.Name}   {currentEmployee.Amount}",
+                replyMarkup: keyboard
+            );
+        }
+
+        private async Task ShowEmployeeMainMenu(CallbackQuery query, Employee currentEmployee)
+        {
+            var keyboard = new InlineKeyboardMarkup(new[]
+                {
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Выбрать ресторан", "showRestoraunt")
+                    },
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Посмотреть заказ", "showOrder")
+                    },
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Подтвердить заказ", "confirmOrder")
+                    }
+                });
+
+            await _botClient.SendMessage(
+                query.Message.Chat,
+                $"Вы авторизованы как сотрудник\n{currentEmployee.Name}   {currentEmployee.Amount}",
+                replyMarkup: keyboard
+            );
+        }
         public void StopBot()
         {
             _cts?.Cancel();

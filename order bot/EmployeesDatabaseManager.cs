@@ -101,15 +101,15 @@ namespace order_bot
             return employees;
         }
 
-        public Employee GetEmployeeByName(string name)
+        public Employee GetEmployeeByTelegramId(long telegramId)
         {
             using (var connection = new SqliteConnection(_connectionString))
             {
                 connection.Open();
 
                 var command = connection.CreateCommand();
-                command.CommandText = "SELECT * FROM Employees WHERE name = @name";
-                command.Parameters.AddWithValue("@name", name);
+                command.CommandText = "SELECT * FROM Employees WHERE telegram_id = @telegramId";
+                command.Parameters.AddWithValue("@telegramId", telegramId);
 
                 using (var reader = command.ExecuteReader())
                 {
