@@ -84,7 +84,7 @@ namespace order_bot
                         if (db.EmployeeExistsByTelegramId(query.From.Id))
                         {
                             _userRoles[query.From.Id] = "employee";
-                            await _botClient.SendMessage(query.Message.Chat, "Успешно");
+                            await _botClient.SendMessage(query.Message.Chat, "Успешно авторизованы как сотрудник✅");
                             var currentEmployee = new Employee();
                             currentEmployee = db.GetEmployeeByTelegramId(query.From.Id);
 
@@ -92,8 +92,7 @@ namespace order_bot
                         }
                         else
                         {
-                            _userRoles[query.From.Id] = "manager";
-                            await _botClient.SendMessage(query.Message.Chat, "Нет такого сотрудника");
+                            await _botClient.SendMessage(query.Message.Chat, "Нет такого сотрудника❌");
                         }
                     }
                 }
@@ -102,11 +101,12 @@ namespace order_bot
                     int managerId = int.Parse(File.ReadAllText("..\\..\\..\\Databases\\ManagerId.txt").Trim());
                     if (managerId == query.From.Id)
                     {
-                        await _botClient.SendMessage(query.Message.Chat, "Успешно");
+                        _userRoles[query.From.Id] = "manager";
+                        await _botClient.SendMessage(query.Message.Chat, "Успешно авторизованы как менеджер✅");
                     }
                     else
                     {
-                        await _botClient.SendMessage(query.Message.Chat, "Нет такого менеджера");
+                        await _botClient.SendMessage(query.Message.Chat, "Нет такого менеджера❌");
                     }
                 }
                 await _botClient.AnswerCallbackQuery(query.Id);
