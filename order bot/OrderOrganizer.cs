@@ -12,26 +12,29 @@ namespace order_bot
 
         public class PositionSummary
         {
+            public string ItemName { get; set; }
             public decimal Price { get; set; }
             public int Count { get; set; }
             public decimal TotalAmount => Price * Count;
 
-            public PositionSummary(decimal price, int count)
+            public PositionSummary(string itemName, decimal price, int count)
             {
+                ItemName = itemName;
                 Price = price;
                 Count = count;
             }
 
             public override string ToString()
             {
-                return $"{Count} × {Price:C} = {TotalAmount:C}";
+                return $"{ItemName}: {Count} × {Price:C} = {TotalAmount:C}";
             }
         }
 
         public class RestaurantStats
         {
             public string Name { get; set; }
-            public Dictionary<decimal, PositionSummary> Positions { get; set; } = new();
+            // Ключ: "Название|Цена" (на случай одинаковых названий с разной ценой)
+            public Dictionary<string, PositionSummary> Positions { get; set; } = new();
             public int TotalOrders => Positions.Sum(p => p.Value.Count);
             public decimal TotalRevenue => Positions.Sum(p => p.Value.TotalAmount);
 
@@ -60,12 +63,16 @@ namespace order_bot
 
                 var restaurant = result[order.Restaurant];
 
-                if (!restaurant.Positions.ContainsKey(order.Price))
+                // Используем Name из Order
+                string itemName = !string.IsNullOrEmpty(order.Name) ? order.Name : $"Позиция {order.Price:C}";
+                string positionKey = $"{itemName}|{order.Price}";
+
+                if (!restaurant.Positions.ContainsKey(positionKey))
                 {
-                    restaurant.Positions[order.Price] = new PositionSummary(order.Price, 0);
+                    restaurant.Positions[positionKey] = new PositionSummary(itemName, order.Price, 0);
                 }
 
-                restaurant.Positions[order.Price].Count += order.Count;
+                restaurant.Positions[positionKey].Count += order.Count;
             }
 
             return result;
@@ -78,24 +85,18 @@ namespace order_bot
 
             foreach (var order in orders)
             {
-                if (!stats.Positions.ContainsKey(order.Price))
+                string itemName = !string.IsNullOrEmpty(order.Name) ? order.Name : $"Позиция {order.Price:C}";
+                string positionKey = $"{itemName}|{order.Price}";
+
+                if (!stats.Positions.ContainsKey(positionKey))
                 {
-                    stats.Positions[order.Price] = new PositionSummary(order.Price, 0);
+                    stats.Positions[positionKey] = new PositionSummary(itemName, order.Price, 0);
                 }
 
-                stats.Positions[order.Price].Count += order.Count;
+                stats.Positions[positionKey].Count += order.Count;
             }
 
             return stats;
-        }
-
-        public Dictionary<string, decimal> GetRestaurantTotalRevenue()
-        {
-            var stats = GetFullStatistics();
-            return stats.ToDictionary(
-                r => r.Key,
-                r => r.Value.TotalRevenue
-            );
         }
 
         public string GetDetailedReport()
@@ -109,24 +110,33 @@ namespace order_bot
             foreach (var restaurant in stats.OrderBy(r => r.Key))
             {
                 report.AppendLine($"🏢 {restaurant.Key}");
-                report.AppendLine($"Цена       Кол-во       Сумма");
-                report.AppendLine(new string('-', 35));
+                report.AppendLine($"Позиция                Цена      Кол-во       Сумма");
+                report.AppendLine(new string('-', 60));
 
-                foreach (var position in restaurant.Value.Positions.OrderBy(p => p.Key))
+                foreach (var position in restaurant.Value.Positions.Values.OrderBy(p => p.ItemName))
                 {
-                    report.AppendLine($"{position.Key,10:C} {position.Value.Count,8} {position.Value.TotalAmount,12:C}");
+                    report.AppendLine($"{position.ItemName,-20} {position.Price,8:C} {position.Count,8} {position.TotalAmount,12:C}");
                 }
 
-                report.AppendLine(new string('-', 35));
-                report.AppendLine($"Итого: {restaurant.Value.TotalRevenue,25:C}");
+                report.AppendLine(new string('-', 60));
+                report.AppendLine($"Итого по ресторану: {restaurant.Value.TotalRevenue,40:C}");
                 report.AppendLine();
             }
 
             decimal grandTotal = stats.Sum(r => r.Value.TotalRevenue);
-            report.AppendLine(new string('=', 45));
-            report.AppendLine($"ОБЩАЯ СУММА: {grandTotal,32:C}");
+            report.AppendLine(new string('=', 60));
+            report.AppendLine($"ОБЩАЯ СУММА ПО ВСЕМ РЕСТОРАНАМ: {grandTotal,25:C}");
 
             return report.ToString();
+        }
+
+        public Dictionary<string, decimal> GetRestaurantTotalRevenue()
+        {
+            var stats = GetFullStatistics();
+            return stats.ToDictionary(
+                r => r.Key,
+                r => r.Value.TotalRevenue
+            );
         }
 
         public List<KeyValuePair<string, decimal>> GetTopRestaurants(int topN = 5)
@@ -138,10 +148,10 @@ namespace order_bot
                 .ToList();
         }
 
-        public Dictionary<string, (decimal Price, int Count)> GetMostPopularPositionPerRestaurant()
+        public Dictionary<string, (string ItemName, int Count)> GetMostPopularPositionPerRestaurant()
         {
             var stats = GetFullStatistics();
-            var result = new Dictionary<string, (decimal, int)>();
+            var result = new Dictionary<string, (string, int)>();
 
             foreach (var restaurant in stats)
             {
@@ -151,25 +161,8 @@ namespace order_bot
                         .OrderByDescending(p => p.Value.Count)
                         .First();
 
-                    result[restaurant.Key] = (mostPopular.Key, mostPopular.Value.Count);
+                    result[restaurant.Key] = (mostPopular.Value.ItemName, mostPopular.Value.Count);
                 }
-            }
-
-            return result;
-        }
-
-        public Dictionary<decimal, int> GetGlobalPriceStatistics()
-        {
-            var allOrders = _dbManager.GetAllOrders();
-            var result = new Dictionary<decimal, int>();
-
-            foreach (var order in allOrders)
-            {
-                if (!result.ContainsKey(order.Price))
-                {
-                    result[order.Price] = 0;
-                }
-                result[order.Price] += order.Count;
             }
 
             return result;
