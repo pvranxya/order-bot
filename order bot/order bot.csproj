@@ -13,8 +13,4 @@
     <PackageReference Include="Telegram.Bot" Version="22.7.5" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Databases\" />
-  </ItemGroup>
-
 </Project>
