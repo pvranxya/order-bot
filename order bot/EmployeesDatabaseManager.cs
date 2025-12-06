@@ -165,7 +165,7 @@ namespace order_bot
 
                 return command.ExecuteNonQuery();
             }
-        }
+        } 
 
         public bool EmployeeExistsByTelegramId(long telegramId)
         {
