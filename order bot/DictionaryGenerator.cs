@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace order_bot
 {
-    internal class RestaurantDictionaryGenerator
+    internal class DictionaryGenerator
     {
         public Dictionary<int, string> CreateDictionaryFromArray(string[] items)
         {
