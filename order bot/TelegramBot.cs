@@ -11,6 +11,8 @@ namespace order_bot
         private TelegramBotClient _botClient;
         private CancellationTokenSource _cts;
 
+        private static readonly Dictionary<long, string> _userRoles = new Dictionary<long, string>();
+
         public async Task RunBot()
         {
             _cts = new CancellationTokenSource();
@@ -35,6 +37,15 @@ namespace order_bot
 
         private async Task OnMessage(Message msg, UpdateType type)
         {
+            if (msg.Text != null && !msg.Text.StartsWith("/start"))
+            {
+                if (!IsUserAuthorized(msg.From.Id))
+                {
+                    await _botClient.SendMessage(msg.Chat, "Пожалуйста, авторизуйтесь с помощью команды /start");
+                    return;
+                }
+            }
+
             if (msg.Text == "/start")
             {
                 var keyboard = new InlineKeyboardMarkup(new[]
@@ -52,6 +63,11 @@ namespace order_bot
                     replyMarkup: keyboard
                 );
             }
+
+            else if (msg.Text != null && IsUserAuthorized(msg.From.Id))
+            {
+                await HandleAuthorizedMessage(msg);
+            }
         }
 
         private async Task OnUpdate(Update update)
@@ -60,14 +76,67 @@ namespace order_bot
             {
                 if (query.Data == "employee")
                 {
-
+                    using (var db = new EmployeesDatabaseManager())
+                    {
+                        if (db.EmployeeExistsByTelegramId(query.From.Id))
+                        {
+                            _userRoles[query.From.Id] = "employee";
+                            await _botClient.SendMessage(query.Message.Chat, "Успешно");
+                        }
+                        else
+                        {
+                            _userRoles[query.From.Id] = "manager";
+                            await _botClient.SendMessage(query.Message.Chat, "Нет такого сотрудника");
+                        }
+                    }
                 }
                 if (query.Data == "manager")
                 {
-
+                    int managerId = int.Parse(File.ReadAllText("..\\..\\..\\Databases\\ManagerId.txt").Trim());
+                    if (managerId == query.From.Id)
+                    {
+                        await _botClient.SendMessage(query.Message.Chat, "Успешно");
+                    }
+                    else
+                    {
+                        await _botClient.SendMessage(query.Message.Chat, "Нет такого менеджера");
+                    }
                 }
-                await _botClient.AnswerCallbackQuery(query.Id, $"You picked {query.Data}");
-                await _botClient.SendMessage(query.Message!.Chat, $"User {query.From} clicked on {query.Data}");
+                await _botClient.AnswerCallbackQuery(query.Id);
+            }
+        }
+
+        private bool IsUserAuthorized(long userId)
+        {
+            return _userRoles.ContainsKey(userId);
+        }
+
+        private string GetUserRole(long userId)
+        {
+            return _userRoles.ContainsKey(userId) ? _userRoles[userId] : null;
+        }
+
+        private async Task HandleAuthorizedMessage(Message msg)
+        {
+            var role = GetUserRole(msg.From.Id);
+
+            
+            if (msg.Text == "/help")
+            {
+                var helpText = role == "manager"
+                    ? "Команды менеджера: /orders, /statistics"
+                    : "Команды сотрудника: /tasks, /report";
+
+                await _botClient.SendMessage(msg.Chat, helpText);
+            }
+            else if (msg.Text == "/logout")
+            {
+                _userRoles.Remove(msg.From.Id);
+                await _botClient.SendMessage(msg.Chat, "Вы вышли из системы. Используйте /start для повторной авторизации.");
+            }
+            else
+            {
+                await _botClient.SendMessage(msg.Chat, $"Вы авторизованы как {role}. Ваше сообщение: {msg.Text}");
             }
         }
 
