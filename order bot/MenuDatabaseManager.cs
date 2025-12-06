@@ -52,6 +52,184 @@ public class MenuDatabaseManager : IDisposable
         }
     }
 
+    // ============ МЕТОД 1: Получить список ресторанов ============
+    public List<string> GetRestaurants()
+    {
+        EnsureConnectionOpen();
+        var restaurants = new List<string>();
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = "SELECT DISTINCT Restaurant FROM MenuItems ORDER BY Restaurant";
+
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var restaurant = reader.GetString(0);
+                    if (!string.IsNullOrEmpty(restaurant))
+                    {
+                        restaurants.Add(restaurant);
+                    }
+                }
+            }
+        }
+
+        return restaurants;
+    }
+
+    // ============ МЕТОД 2: Получить меню по ресторану ============
+    public List<MenuItem> GetMenuItemsByRestaurant(string restaurant)
+    {
+        if (string.IsNullOrWhiteSpace(restaurant))
+            throw new ArgumentException("Название ресторана не может быть пустым", nameof(restaurant));
+
+        EnsureConnectionOpen();
+        var menuItems = new List<MenuItem>();
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = "SELECT * FROM MenuItems WHERE Restaurant = @restaurant ORDER BY Category, Name";
+            command.Parameters.AddWithValue("@restaurant", restaurant);
+
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var menuItem = new MenuItem
+                    {
+                        Id = reader.GetInt32(0),
+                        Restaurant = reader.GetString(1),
+                        Name = reader.GetString(2),
+                        Price = reader.GetDecimal(3),
+                        Category = reader.GetString(4)
+                    };
+                    menuItems.Add(menuItem);
+                }
+            }
+        }
+
+        return menuItems;
+    }
+
+    // ============ МЕТОД 3: Получить категории по ресторану ============
+    public List<string> GetCategoriesByRestaurant(string restaurant)
+    {
+        if (string.IsNullOrWhiteSpace(restaurant))
+            throw new ArgumentException("Название ресторана не может быть пустым", nameof(restaurant));
+
+        EnsureConnectionOpen();
+        var categories = new List<string>();
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = "SELECT DISTINCT Category FROM MenuItems WHERE Restaurant = @restaurant ORDER BY Category";
+            command.Parameters.AddWithValue("@restaurant", restaurant);
+
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var category = reader.GetString(0);
+                    if (!string.IsNullOrEmpty(category))
+                    {
+                        categories.Add(category);
+                    }
+                }
+            }
+        }
+
+        return categories;
+    }
+
+    // ============ МЕТОД 4: Получить блюда по ресторану и категории ============
+    public List<MenuItem> GetMenuItemsByRestaurantAndCategory(string restaurant, string category)
+    {
+        if (string.IsNullOrWhiteSpace(restaurant))
+            throw new ArgumentException("Название ресторана не может быть пустым", nameof(restaurant));
+
+        if (string.IsNullOrWhiteSpace(category))
+            throw new ArgumentException("Категория не может быть пустой", nameof(category));
+
+        EnsureConnectionOpen();
+        var menuItems = new List<MenuItem>();
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = "SELECT * FROM MenuItems WHERE Restaurant = @restaurant AND Category = @category ORDER BY Name";
+            command.Parameters.AddWithValue("@restaurant", restaurant);
+            command.Parameters.AddWithValue("@category", category);
+
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var menuItem = new MenuItem
+                    {
+                        Id = reader.GetInt32(0),
+                        Restaurant = reader.GetString(1),
+                        Name = reader.GetString(2),
+                        Price = reader.GetDecimal(3),
+                        Category = reader.GetString(4)
+                    };
+                    menuItems.Add(menuItem);
+                }
+            }
+        }
+
+        return menuItems;
+    }
+
+    // ============ МЕТОД 5: Показать меню ресторана с группировкой по категориям ============
+    public void ShowRestaurantMenuByCategories(string restaurant)
+    {
+        if (string.IsNullOrWhiteSpace(restaurant))
+            throw new ArgumentException("Название ресторана не может быть пустым", nameof(restaurant));
+
+        // Получаем все категории ресторана
+        var categories = GetCategoriesByRestaurant(restaurant);
+
+        if (categories.Count == 0)
+        {
+            Console.WriteLine($"Ресторан '{restaurant}' не найден или меню пусто.");
+            return;
+        }
+
+        Console.WriteLine($"\n=== МЕНЮ РЕСТОРАНА: {restaurant} ===");
+        Console.WriteLine($"Категорий: {categories.Count}");
+        Console.WriteLine("=".PadRight(60, '='));
+
+        // Для каждой категории получаем и выводим блюда
+        foreach (var category in categories)
+        {
+            var items = GetMenuItemsByRestaurantAndCategory(restaurant, category);
+
+            if (items.Count > 0)
+            {
+                Console.WriteLine($"\n{category.ToUpper()}:");
+                Console.WriteLine($"{"Название",-50} {"Цена",-10}");
+                Console.WriteLine("-".PadRight(60, '-'));
+
+                foreach (var item in items)
+                {
+                    Console.WriteLine($"{item.Name,-50} {item.Price,-10:C}");
+                }
+            }
+        }
+
+        Console.WriteLine("=".PadRight(60, '='));
+
+        // Показываем итоговую сумму всех блюд
+        var allItems = GetMenuItemsByRestaurant(restaurant);
+        decimal total = 0;
+        foreach (var item in allItems)
+        {
+            total += item.Price;
+        }
+        Console.WriteLine($"Всего блюд: {allItems.Count}, Общая сумма: {total:C}");
+    }
+
+    // ============ СУЩЕСТВУЮЩИЕ МЕТОДЫ (без изменений) ============
     public void ClearAllMenuItem()
     {
         EnsureConnectionOpen();
@@ -76,7 +254,7 @@ public class MenuDatabaseManager : IDisposable
 
         using (var command = _connection.CreateCommand())
         {
-            command.CommandText = "SELECT * FROM MenuItems ORDER BY Id";
+            command.CommandText = "SELECT * FROM MenuItems ORDER BY Restaurant, Category, Name";
 
             using (var reader = command.ExecuteReader())
             {
@@ -97,7 +275,6 @@ public class MenuDatabaseManager : IDisposable
 
         return menuItems;
     }
-
 
     public void AddMenuItem(MenuItem menuItem)
     {
@@ -123,6 +300,7 @@ public class MenuDatabaseManager : IDisposable
             menuItem.Id = Convert.ToInt32(command.ExecuteScalar());
         }
     }
+
     public void ShowMenuItems()
     {
         var menuItems = GetAllMenuItem();
@@ -145,6 +323,7 @@ public class MenuDatabaseManager : IDisposable
         }
         Console.WriteLine("=".PadRight(80, '='));
     }
+
     public MenuItem GetMenuItemById(int id)
     {
         EnsureConnectionOpen();
