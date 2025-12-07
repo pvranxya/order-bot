@@ -48,7 +48,7 @@ namespace order_bot
         public async Task RunBot()
         {
             _cts = new CancellationTokenSource();
-            _botClient = new TelegramBotClient("7553461301:AAHdi2tbhlu0GrvWDLFs2HOE1Fpw46ZMQJw", cancellationToken: _cts.Token);
+            _botClient = new TelegramBotClient("8388656777:AAFR0BynVg-tcJuSzYgBXUMOgVH1qpVEcsI", cancellationToken: _cts.Token);
 
             var me = await _botClient.GetMe();
 
