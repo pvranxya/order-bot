@@ -71,6 +71,47 @@ namespace order_bot
             }
         }
 
+        public void ShowAllEmployees()
+        {
+            var employees = GetAllEmployees();
+
+            if (employees.Count == 0)
+            {
+                Console.WriteLine("Список сотрудников пуст.");
+                return;
+            }
+
+            Console.WriteLine("\n=== СПИСОК СОТРУДНИКОВ ===");
+            Console.WriteLine($"Всего сотрудников: {employees.Count}");
+            Console.WriteLine("=".PadRight(80, '='));
+            Console.WriteLine($"{"ID",-5} {"Имя",-20} {"Telegram ID",-15} {"Сумма",-15} {"Офис",-20}");
+            Console.WriteLine("-".PadRight(80, '-'));
+
+            decimal totalAmount = 0;
+            foreach (var employee in employees)
+            {
+                Console.WriteLine($"{employee.Id,-5} {employee.Name,-20} {employee.TelegramId,-15} {employee.Amount,-15:C} {employee.Office ?? "Не указан",-20}");
+                totalAmount += employee.Amount;
+            }
+
+            Console.WriteLine("-".PadRight(80, '-'));
+            Console.WriteLine($"{"Общая сумма:",-40} {totalAmount,30:C}");
+            Console.WriteLine("=".PadRight(80, '='));
+
+            // Дополнительная статистика
+            Console.WriteLine("\n=== СТАТИСТИКА ===");
+            var employeesWithTelegram = employees.Count(e => e.TelegramId > 0);
+            var employeesWithoutTelegram = employees.Count - employeesWithTelegram;
+
+            Console.WriteLine($"Сотрудники с Telegram ID: {employeesWithTelegram}");
+            Console.WriteLine($"Сотрудники без Telegram ID: {employeesWithoutTelegram}");
+
+            if (employees.Count > 0)
+            {
+                var averageAmount = totalAmount / employees.Count;
+                Console.WriteLine($"Средняя сумма на сотрудника: {averageAmount:C}");
+            }
+        }
         public List<Employee> GetAllEmployees()
         {
             var employees = new List<Employee>();

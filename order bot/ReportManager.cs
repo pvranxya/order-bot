@@ -118,7 +118,7 @@ namespace order_bot
             html.AppendLine("</html>");
 
             return html.ToString();
-        }
+        }   
 
         public void SaveHtmlReport(string filePath, string title = "Отчет по заказам")
         {
