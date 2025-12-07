@@ -12,6 +12,7 @@ namespace order_bot
         private TelegramBotClient _botClient;
         private CancellationTokenSource _cts;
         private static System.Timers.Timer _deadlineTimer;
+        private static System.Timers.Timer _midnightTimer;
         private static DateTime _deadlineTime = DateTime.MinValue;
         private static bool _isDeadlinePassed = false;
 
@@ -21,7 +22,7 @@ namespace order_bot
         // Класс для хранения состояния пользователя
         private class UserState
         {
-            public string StateType { get; set; } = "main"; // main, restaurant_selection, category_selection, item_selection
+            public string StateType { get; set; } = "main"; // main, restaurant_selection, category_selection, item_selection, adding_employee_telegram, adding_employee_name, adding_employee_amount
             public string SelectedRestaurant { get; set; }
             public string SelectedCategory { get; set; }
             public List<OrderItem> SelectedItems { get; set; } = new List<OrderItem>();
@@ -33,6 +34,7 @@ namespace order_bot
 
             // Для добавления сотрудников и ресторанов
             public string TempData { get; set; } // Для временного хранения данных
+            public Employee TempEmployee { get; set; } // Для временного хранения данных сотрудника
         }
 
         // Класс для хранения выбранного элемента заказа
@@ -50,6 +52,9 @@ namespace order_bot
 
             var me = await _botClient.GetMe();
 
+            // Устанавливаем команды меню
+            await SetBotCommands();
+
             _botClient.OnError += OnError;
             _botClient.OnMessage += OnMessage;
             _botClient.OnUpdate += OnUpdate;
@@ -57,11 +62,110 @@ namespace order_bot
             // Запускаем таймер для проверки дедлайна каждую минуту
             StartDeadlineTimer();
 
+            // Запускаем таймер для очистки заказов в полночь
+            StartMidnightTimer();
+
             Console.WriteLine($"@{me.Username} is running... Press Enter to terminate");
             Console.ReadLine();
 
             _cts.Cancel();
             _deadlineTimer?.Stop();
+            _midnightTimer?.Stop();
+        }
+
+        private async Task SetBotCommands()
+        {
+            try
+            {
+                // Общие команды для всех пользователей
+                var commands = new List<BotCommand>
+                {
+                    new BotCommand
+                    {
+                        Command = "start",
+                        Description = "🚀 Запустить бота / авторизация"
+                    },
+                    new BotCommand
+                    {
+                        Command = "help",
+                        Description = "📋 Показать справку"
+                    },
+                    new BotCommand
+                    {
+                        Command = "logout",
+                        Description = "🚪 Выйти из системы"
+                    }
+                };
+
+                await _botClient.SetMyCommands(
+                    commands: commands,
+                    scope: BotCommandScope.Default(),
+                    cancellationToken: _cts.Token
+                );
+
+                Console.WriteLine("Команды бота установлены");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при установке команд: {ex.Message}");
+            }
+        }
+
+        private async Task UpdateCommandsForUser(long userId)
+        {
+            try
+            {
+                if (IsUserAuthorized(userId))
+                {
+                    var role = GetUserRole(userId);
+                    var commands = new List<BotCommand>
+                    {
+                        new BotCommand
+                        {
+                            Command = "start",
+                            Description = "🚀 Запустить бота"
+                        },
+                        new BotCommand
+                        {
+                            Command = "help",
+                            Description = "📋 Справка"
+                        },
+                        new BotCommand
+                        {
+                            Command = "logout",
+                            Description = "🚪 Выйти"
+                        }
+                    };
+
+                    if (role == "employee")
+                    {
+                        commands.Add(new BotCommand
+                        {
+                            Command = "balance",
+                            Description = "💰 Мой баланс"
+                        });
+                    }
+
+                    await _botClient.SetMyCommands(
+                        commands: commands,
+                        scope: new BotCommandScopeChat { ChatId = userId },
+                        languageCode: "ru",
+                        cancellationToken: _cts.Token
+                    );
+                }
+                else
+                {
+                    // Сброс к стандартным командам
+                    await _botClient.DeleteMyCommands(
+                        scope: new BotCommandScopeChat { ChatId = userId },
+                        cancellationToken: _cts.Token
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при обновлении команд для пользователя {userId}: {ex.Message}");
+            }
         }
 
         private void StartDeadlineTimer()
@@ -72,6 +176,54 @@ namespace order_bot
             _deadlineTimer.Enabled = true;
         }
 
+        private void StartMidnightTimer()
+        {
+            // Вычисляем время до следующей полночи
+            var now = DateTime.Now;
+            var midnight = now.Date.AddDays(1);
+            var timeToMidnight = midnight - now;
+
+            _midnightTimer = new System.Timers.Timer(timeToMidnight.TotalMilliseconds);
+            _midnightTimer.Elapsed += async (s, e) =>
+            {
+                await ClearOrdersAtMidnight();
+
+                // Перезапускаем таймер на следующий день
+                _midnightTimer.Interval = TimeSpan.FromDays(1).TotalMilliseconds;
+                _midnightTimer.Start();
+            };
+            _midnightTimer.AutoReset = false;
+            _midnightTimer.Enabled = true;
+
+            Console.WriteLine($"Очистка заказов запланирована на {midnight:HH:mm:ss}");
+        }
+
+        private async Task ClearOrdersAtMidnight()
+        {
+            try
+            {
+                using (var ordersDb = new OrdersDatabaseManager())
+                {
+                    int deletedCount = ordersDb.ClearAllOrders();
+                    Console.WriteLine($"Полночь. Очищено {deletedCount} заказов.");
+
+                    // Сбрасываем флаг дедлайна для нового дня
+                    _isDeadlinePassed = false;
+
+                    // Уведомляем менеджера
+                    int managerId = int.Parse(File.ReadAllText("..\\..\\..\\Databases\\ManagerId.txt").Trim());
+                    await _botClient.SendMessage(
+                        chatId: managerId,
+                        text: $"⏰ Полночь. Очищено {deletedCount} заказов. Начинается новый день."
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при очистке заказов в полночь: {ex.Message}");
+            }
+        }
+
         private async void CheckDeadline(object sender, ElapsedEventArgs e)
         {
             if (_deadlineTime != DateTime.MinValue && !_isDeadlinePassed)
@@ -80,7 +232,7 @@ namespace order_bot
                 if (now >= _deadlineTime)
                 {
                     _isDeadlinePassed = true;
-                    await SendDailyReportAndClearOrders();
+                    await SendDailyReport();
                 }
                 else
                 {
@@ -91,13 +243,13 @@ namespace order_bot
                     if (now >= todayDeadline)
                     {
                         _isDeadlinePassed = true;
-                        await SendDailyReportAndClearOrders();
+                        await SendDailyReport();
                     }
                 }
             }
         }
 
-        private async Task SendDailyReportAndClearOrders()
+        private async Task SendDailyReport()
         {
             try
             {
@@ -114,17 +266,49 @@ namespace order_bot
                     // Отправляем отчет менеджеру
                     await SendReportToManager(reportPath);
 
-                    // Очищаем заказы
-                    int deletedCount = ordersDb.ClearAllOrders();
-                    Console.WriteLine($"Дедлайн прошел. Очищено {deletedCount} заказов.");
-                }
+                    // Уведомляем всех сотрудников о прохождении дедлайна
+                    await NotifyEmployeesAboutDeadline();
 
-                // Сбрасываем флаг для следующего дня
-                _isDeadlinePassed = false;
+                    Console.WriteLine($"Дедлайн прошел. Отчет отправлен менеджеру.");
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Ошибка при обработке дедлайна: {ex.Message}");
+            }
+        }
+
+        private async Task NotifyEmployeesAboutDeadline()
+        {
+            try
+            {
+                using (var db = new EmployeesDatabaseManager())
+                {
+                    var employees = db.GetAllEmployees();
+
+                    foreach (var employee in employees)
+                    {
+                        if (employee.TelegramId > 0)
+                        {
+                            try
+                            {
+                                await _botClient.SendMessage(
+                                    chatId: employee.TelegramId,
+                                    text: $"⏰ Дедлайн на сегодня ({DateTime.Now:dd.MM.yyyy}) пройден!\n" +
+                                          $"Новые заказы не принимаются. Заказы будут очищены в полночь."
+                                );
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Не удалось уведомить сотрудника {employee.Name}: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при уведомлении сотрудников: {ex.Message}");
             }
         }
 
@@ -136,16 +320,22 @@ namespace order_bot
                 int managerId = int.Parse(File.ReadAllText("..\\..\\..\\Databases\\ManagerId.txt").Trim());
 
                 // Отправляем сообщение менеджеру
-                using (var stream = System.IO.File.OpenRead(reportPath))
+                await using (var stream = System.IO.File.OpenRead(reportPath))
                 {
-                    await _botClient.SendDocumentAsync(
+                    var inputFile = InputFile.FromStream(stream, Path.GetFileName(reportPath));
+
+                    await _botClient.SendDocument(
                         chatId: managerId,
-                        document: InputFile.FromStream(stream, Path.GetFileName(reportPath)),
-                        caption: $"📊 Ежедневный отчет за {DateTime.Now:dd.MM.yyyy}"
+                        document: inputFile,
+                        caption: $"📊 Ежедневный отчет за {DateTime.Now:dd.MM.yyyy}",
+                        parseMode: ParseMode.Html
                     );
                 }
 
                 Console.WriteLine($"Отчет отправлен менеджеру {managerId}");
+
+                // Удаляем файл отчета после отправки
+                File.Delete(reportPath);
             }
             catch (Exception ex)
             {
@@ -160,36 +350,47 @@ namespace order_bot
 
         private async Task OnMessage(Message msg, UpdateType type)
         {
-            if (msg.Text != null && !msg.Text.StartsWith("/start"))
+            // Обработка быстрых команд в любом состоянии
+            if (msg.Text != null)
             {
-                if (!IsUserAuthorized(msg.From.Id))
+                if (msg.Text == "/start")
                 {
-                    await _botClient.SendMessage(msg.Chat, "Пожалуйста, авторизуйтесь с помощью команды /start");
+                    await HandleStartCommand(msg);
+                    return;
+                }
+
+                if (msg.Text == "/logout")
+                {
+                    await HandleLogoutCommand(msg);
+                    return;
+                }
+
+                if (msg.Text == "/help")
+                {
+                    await HandleHelpCommand(msg);
+                    return;
+                }
+
+                if (msg.Text == "/balance" && IsUserAuthorized(msg.From.Id) && GetUserRole(msg.From.Id) == "employee")
+                {
+                    await HandleBalanceCommand(msg);
                     return;
                 }
             }
 
-            if (msg.Text == "/start")
+            // Остальная логика обработки сообщений
+            if (msg.Text != null && !msg.Text.StartsWith("/"))
             {
-                var keyboard = new InlineKeyboardMarkup(new[]
+                if (!IsUserAuthorized(msg.From.Id))
                 {
-                    new[]
-                    {
-                        InlineKeyboardButton.WithCallbackData("Сотрудник", "employee")
-                    },
-                    new[]
-                    {
-                        InlineKeyboardButton.WithCallbackData("Менеджер", "manager")
-                    }
-                });
-
-                await _botClient.SendMessage(
-                    msg.Chat,
-                    "Авторизуйтесь",
-                    replyMarkup: keyboard
-                );
+                    await _botClient.SendMessage(msg.Chat,
+                        "Пожалуйста, авторизуйтесь с помощью команды /start\n\n" +
+                        "Используйте команды из меню слева для навигации.");
+                    return;
+                }
             }
-            else if (msg.Text != null && IsUserAuthorized(msg.From.Id))
+
+            if (msg.Text != null && IsUserAuthorized(msg.From.Id))
             {
                 await HandleAuthorizedMessage(msg);
             }
@@ -251,8 +452,127 @@ namespace order_bot
                 {
                     await StartAddMenuItem(query);
                 }
+                if (query.Data == "clearOrder")
+                {
+                    await ClearOrder(query);
+                }
+                if (query.Data == "topupBalance")
+                {
+                    await StartTopupBalance(query);
+                }
+                if (query.Data == "topupAllEmployees")
+                {
+                    await StartTopupAllEmployees(query);
+                }
 
                 await _botClient.AnswerCallbackQuery(query.Id);
+            }
+        }
+
+        // Обработка быстрых команд
+        private async Task HandleStartCommand(Message msg)
+        {
+            var keyboard = new InlineKeyboardMarkup(new[]
+            {
+                new[]
+                {
+                    InlineKeyboardButton.WithCallbackData("Сотрудник", "employee")
+                },
+                new[]
+                {
+                    InlineKeyboardButton.WithCallbackData("Менеджер", "manager")
+                }
+            });
+
+            await _botClient.SendMessage(
+                msg.Chat,
+                "🍽️ Добро пожаловать в систему заказов!\n\n" +
+                "Выберите роль для авторизации:",
+                replyMarkup: keyboard
+            );
+        }
+
+        private async Task HandleLogoutCommand(Message msg)
+        {
+            if (IsUserAuthorized(msg.From.Id))
+            {
+                var role = GetUserRole(msg.From.Id);
+                _userRoles.Remove(msg.From.Id);
+                _userStates.Remove(msg.From.Id);
+
+                // Обновляем команды меню для пользователя
+                await UpdateCommandsForUser(msg.From.Id);
+
+                await _botClient.SendMessage(msg.Chat,
+                    $"✅ Вы успешно вышли из системы ({role}).\n" +
+                    "Для повторной авторизации используйте команду /start");
+            }
+            else
+            {
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Вы не авторизованы.\n" +
+                    "Для авторизации используйте команду /start");
+            }
+        }
+
+        private async Task HandleHelpCommand(Message msg)
+        {
+            var message = "📋 Доступные команды:\n\n";
+
+            if (IsUserAuthorized(msg.From.Id))
+            {
+                var role = GetUserRole(msg.From.Id);
+
+                message += "Основные команды (доступны в меню слева):\n";
+                message += "/start - авторизация\n";
+                message += "/logout - выход из системы\n";
+                message += "/help - показать справку\n\n";
+
+                if (role == "employee")
+                {
+                    message += "Команды для сотрудников:\n";
+                    message += "/balance - показать баланс\n";
+                    message += "\n⚡ Быстрые действия через кнопки меню:\n";
+                    message += "• Выбрать ресторан 🍽️\n";
+                    message += "• Посмотреть заказ 📋\n";
+                    message += "• Подтвердить заказ ✅\n";
+                }
+                else if (role == "manager")
+                {
+                    message += "⚡ Управление через кнопки меню:\n";
+                    message += "• Добавить сотрудника ➕\n";
+                    message += "• Добавить ресторан/блюдо 🏪🍽️\n";
+                    message += "• Установить дедлайн ⏰\n";
+                    message += "• Пополнить баланс 💰\n";
+                    message += "• Запросить отчет 📊\n";
+                }
+            }
+            else
+            {
+                message += "Команды для новых пользователей:\n";
+                message += "/start - авторизация в системе\n";
+                message += "/help - показать эту справку\n\n";
+                message += "Для доступа к полному функционалу необходимо авторизоваться.";
+            }
+
+            await _botClient.SendMessage(msg.Chat, message);
+        }
+
+        private async Task HandleBalanceCommand(Message msg)
+        {
+            using (var db = new EmployeesDatabaseManager())
+            {
+                var employee = db.GetEmployeeByTelegramId(msg.From.Id);
+                if (employee != null)
+                {
+                    await _botClient.SendMessage(msg.Chat,
+                        $"💰 Ваш баланс: {employee.Amount:C}\n" +
+                        $"👤 Имя: {employee.Name}");
+                }
+                else
+                {
+                    await _botClient.SendMessage(msg.Chat, "❌ Сотрудник не найден.");
+                }
             }
         }
 
@@ -318,32 +638,14 @@ namespace order_bot
                 return;
             }
 
-            // Команды сотрудника
+            // Если не в состоянии, показываем главное меню
             var currentEmployee = new Employee();
             using (var db = new EmployeesDatabaseManager())
             {
                 currentEmployee = db.GetEmployeeByTelegramId(msg.From.Id);
             }
 
-            if (msg.Text == "/help")
-            {
-                var helpText = "Команды:\n" +
-                              "/help - показать справку\n" +
-                              "/logout - выйти из системы\n" +
-                              "\nОсновные действия через кнопки меню";
-
-                await _botClient.SendMessage(msg.Chat, helpText);
-            }
-            else if (msg.Text == "/logout")
-            {
-                _userRoles.Remove(msg.From.Id);
-                _userStates.Remove(msg.From.Id);
-                await _botClient.SendMessage(msg.Chat, "Вы вышли из системы. Используйте /start для повторной авторизации.");
-            }
-            else
-            {
-                await ShowEmployeeMainMenu(msg, currentEmployee);
-            }
+            await ShowEmployeeMainMenu(msg, currentEmployee);
         }
 
         private async Task HandleEmployeeAuth(CallbackQuery query)
@@ -354,41 +656,57 @@ namespace order_bot
                 {
                     _userRoles[query.From.Id] = "employee";
                     _userStates[query.From.Id] = new UserState();
-                    await _botClient.SendMessage(query.Message.Chat, "Успешно авторизованы как сотрудник✅");
 
                     var currentEmployee = db.GetEmployeeByTelegramId(query.From.Id);
+
+                    // Обновляем команды меню для сотрудника
+                    await UpdateCommandsForUser(query.From.Id);
+
+                    await _botClient.SendMessage(query.Message.Chat,
+                        $"✅ Успешно авторизованы как сотрудник\n" +
+                        $"👤 Имя: {currentEmployee.Name}\n" +
+                        $"💰 Баланс: {currentEmployee.Amount:C}\n\n" +
+                        "Используйте команды из меню слева для быстрого доступа.");
+
                     await ShowEmployeeMainMenu(query, currentEmployee);
                 }
                 else
                 {
-                    await _botClient.SendMessage(query.Message.Chat, "Нет такого сотрудника❌");
+                    await _botClient.SendMessage(query.Message.Chat,
+                        "❌ Сотрудник не найден.\n" +
+                        "Обратитесь к менеджеру для добавления в систему.");
                 }
             }
         }
 
         private async Task ShowEmployeeMainMenu(Message msg, Employee currentEmployee)
         {
-            var message = $"Вы авторизованы как сотрудник\n{currentEmployee.Name}   {currentEmployee.Amount}";
+            var message = $"👤 {currentEmployee.Name}\n" +
+                         $"💰 Баланс: {currentEmployee.Amount:C}";
 
             // Проверяем дедлайн
             if (_isDeadlinePassed)
             {
-                message += "\n\n⚠️ ДЕДЛАЙН НА СЕГОДНЯ ПРОЙДЕН\nЗаказы не принимаются";
+                message += "\n\n⚠️ ДЕДЛАЙН ПРОЙДЕН\nЗаказы не принимаются";
+            }
+            else
+            {
+                message += "\n\n⚡ Используйте команды в меню слева";
             }
 
             var keyboard = new InlineKeyboardMarkup(new[]
             {
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Выбрать ресторан", "showRestoraunt")
+                    InlineKeyboardButton.WithCallbackData("🍽️ Выбрать ресторан", "showRestoraunt")
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Посмотреть заказ", "showOrder")
+                    InlineKeyboardButton.WithCallbackData("📋 Посмотреть заказ", "showOrder")
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Подтвердить заказ", "confirmOrder")
+                    InlineKeyboardButton.WithCallbackData("✅ Подтвердить заказ", "confirmOrder")
                 }
             });
 
@@ -397,26 +715,31 @@ namespace order_bot
 
         private async Task ShowEmployeeMainMenu(CallbackQuery query, Employee currentEmployee)
         {
-            var message = $"Вы авторизованы как сотрудник\n{currentEmployee.Name}   {currentEmployee.Amount}";
+            var message = $"👤 {currentEmployee.Name}\n" +
+                         $"💰 Баланс: {currentEmployee.Amount:C}";
 
             if (_isDeadlinePassed)
             {
-                message += "\n\n⚠️ ДЕДЛАЙН НА СЕГОДНЯ ПРОЙДЕН\nЗаказы не принимаются";
+                message += "\n\n⚠️ ДЕДЛАЙН ПРОЙДЕН\nЗаказы не принимаются";
+            }
+            else
+            {
+                message += "\n\n⚡ Используйте команды в меню слева";
             }
 
             var keyboard = new InlineKeyboardMarkup(new[]
             {
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Выбрать ресторан", "showRestoraunt")
+                    InlineKeyboardButton.WithCallbackData("🍽️ Выбрать ресторан", "showRestoraunt")
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Посмотреть заказ", "showOrder")
+                    InlineKeyboardButton.WithCallbackData("📋 Посмотреть заказ", "showOrder")
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Подтвердить заказ", "confirmOrder")
+                    InlineKeyboardButton.WithCallbackData("✅ Подтвердить заказ", "confirmOrder")
                 }
             });
 
@@ -439,7 +762,24 @@ namespace order_bot
             await ShowEmployeeMainMenu(query, currentEmployee);
         }
 
-        // Методы для работы с заказами (из предыдущей версии) остаются без изменений
+        private async Task ClearOrder(CallbackQuery query)
+        {
+            if (_userStates.TryGetValue(query.From.Id, out var userState))
+            {
+                userState.SelectedItems.Clear();
+                userState.SelectedRestaurant = null;
+                userState.SelectedCategory = null;
+                userState.RestaurantMapping = null;
+                userState.CategoryMapping = null;
+                userState.ItemMapping = null;
+                userState.StateType = "main";
+            }
+
+            await _botClient.SendMessage(query.Message.Chat, "✅ Заказ очищен.");
+            await ReturnToEmployeeMainMenu(query);
+        }
+
+        // Методы для работы с заказами
         private async Task HandleRestaurantSelection(CallbackQuery query)
         {
             if (_isDeadlinePassed)
@@ -805,7 +1145,28 @@ namespace order_bot
                 message += "\n";
             }
 
-            message += $"💰 Общая сумма: {totalPrice} руб.\n";
+            // Получаем баланс сотрудника
+            using (var db = new EmployeesDatabaseManager())
+            {
+                var employee = db.GetEmployeeByTelegramId(query.From.Id);
+                if (employee != null)
+                {
+                    message += $"💰 Общая сумма заказа: {totalPrice} руб.\n";
+                    message += $"💳 Ваш баланс: {employee.Amount:C}\n";
+
+                    if (employee.Amount < totalPrice)
+                    {
+                        message += $"❌ Недостаточно средств!\n";
+                        message += $"Не хватает: {totalPrice - employee.Amount:C}\n";
+                    }
+                    else
+                    {
+                        message += $"✅ Достаточно средств!\n";
+                        message += $"Останется после оплаты: {employee.Amount - totalPrice:C}\n";
+                    }
+                }
+            }
+
             message += $"📊 Количество позиций: {userState.SelectedItems.Count}";
 
             var keyboard = new InlineKeyboardMarkup(new[]
@@ -847,9 +1208,35 @@ namespace order_bot
 
             try
             {
-                int ordersCreated = 0;
-                decimal totalPrice = 0;
+                // Рассчитываем общую сумму заказа
+                decimal totalPrice = userState.SelectedItems.Sum(item => item.TotalPrice);
 
+                // Проверяем баланс сотрудника
+                Employee currentEmployee;
+                using (var db = new EmployeesDatabaseManager())
+                {
+                    currentEmployee = db.GetEmployeeByTelegramId(query.From.Id);
+
+                    if (currentEmployee == null)
+                    {
+                        await _botClient.SendMessage(query.Message.Chat, "❌ Ошибка: сотрудник не найден в базе данных.");
+                        return;
+                    }
+
+                    if (currentEmployee.Amount < totalPrice)
+                    {
+                        await _botClient.SendMessage(query.Message.Chat,
+                            $"❌ Недостаточно средств!\n" +
+                            $"Сумма заказа: {totalPrice:C}\n" +
+                            $"Ваш баланс: {currentEmployee.Amount:C}\n" +
+                            $"Не хватает: {totalPrice - currentEmployee.Amount:C}\n\n" +
+                            $"Пожалуйста, уменьшите количество позиций в заказе.");
+                        return;
+                    }
+                }
+
+                // Создаем заказы в базе данных
+                int ordersCreated = 0;
                 using (var ordersDb = new OrdersDatabaseManager())
                 {
                     // Создаем отдельные заказы для каждой позиции
@@ -865,8 +1252,14 @@ namespace order_bot
 
                         ordersDb.AddOrder(order);
                         ordersCreated++;
-                        totalPrice += orderItem.TotalPrice;
                     }
+                }
+
+                // Списание денег со счета сотрудника
+                using (var db = new EmployeesDatabaseManager())
+                {
+                    currentEmployee.Amount -= totalPrice;
+                    db.UpdateEmployee(currentEmployee);
                 }
 
                 // Верификация: проверяем, что заказы действительно сохранились
@@ -874,7 +1267,9 @@ namespace order_bot
 
                 var message = "✅ Заказ успешно создан!\n\n";
                 message += $"📋 Количество позиций: {ordersCreated}\n";
-                message += $"💰 Общая сумма: {totalPrice} руб.\n";
+                message += $"💰 Сумма заказа: {totalPrice:C}\n";
+                message += $"💳 Списано с баланса: {totalPrice:C}\n";
+                message += $"📊 Новый баланс: {currentEmployee.Amount:C}\n";
 
                 if (verificationPassed)
                 {
@@ -944,12 +1339,18 @@ namespace order_bot
             {
                 _userRoles[query.From.Id] = "manager";
                 _userStates[query.From.Id] = new UserState();
-                await _botClient.SendMessage(query.Message.Chat, "Успешно авторизованы как менеджер✅");
+
+                // Обновляем команды меню для менеджера
+                await UpdateCommandsForUser(query.From.Id);
+
+                await _botClient.SendMessage(query.Message.Chat,
+                    "✅ Успешно авторизованы как менеджер\n\n" +
+                    "Используйте команды из меню слева для быстрого доступа.");
                 await ShowManagerMainMenu(query);
             }
             else
             {
-                await _botClient.SendMessage(query.Message.Chat, "Нет такого менеджера❌");
+                await _botClient.SendMessage(query.Message.Chat, "❌ Нет такого менеджера");
             }
         }
 
@@ -962,7 +1363,12 @@ namespace order_bot
             }
 
             // Обработка состояний менеджера
-            if (userState.StateType == "adding_employee_name")
+            if (userState.StateType == "adding_employee_telegram")
+            {
+                await HandleAddEmployeeTelegramId(msg);
+                return;
+            }
+            else if (userState.StateType == "adding_employee_name")
             {
                 await HandleAddEmployeeName(msg);
                 return;
@@ -987,42 +1393,41 @@ namespace order_bot
                 await HandleSetDeadline(msg);
                 return;
             }
+            else if (userState.StateType == "topup_employee_id")
+            {
+                await HandleTopupEmployeeId(msg);
+                return;
+            }
+            else if (userState.StateType == "topup_employee_amount")
+            {
+                await HandleTopupEmployeeAmount(msg);
+                return;
+            }
+            else if (userState.StateType == "topup_all_amount")
+            {
+                await HandleTopupAllEmployeesAmount(msg);
+                return;
+            }
 
-            // Команды менеджера
-            if (msg.Text == "/help")
-            {
-                var helpText = "Команды менеджера:\n" +
-                              "/help - показать справку\n" +
-                              "/logout - выйти из системы\n" +
-                              "\nОсновные действия через кнопки меню";
-
-                await _botClient.SendMessage(msg.Chat, helpText);
-            }
-            else if (msg.Text == "/logout")
-            {
-                _userRoles.Remove(msg.From.Id);
-                _userStates.Remove(msg.From.Id);
-                await _botClient.SendMessage(msg.Chat, "Вы вышли из системы. Используйте /start для повторной авторизации.");
-            }
-            else
-            {
-                await ShowManagerMainMenu(msg);
-            }
+            // Если не в состоянии, показываем главное меню
+            await ShowManagerMainMenu(msg);
         }
 
         private async Task ShowManagerMainMenu(CallbackQuery query)
         {
-            var message = "Вы авторизованы как менеджер\n\n";
+            var message = "👑 Вы авторизованы как менеджер\n\n";
 
             if (_deadlineTime != DateTime.MinValue)
             {
                 message += $"⏰ Текущий дедлайн: {_deadlineTime:HH:mm}\n";
-                message += _isDeadlinePassed ? "⚠️ ДЕДЛАЙН СЕГОДНЯ ПРОЙДЕН\n" : "✅ ДЕДЛАЙН ЕЩЕ НЕ НАСТУПИЛ\n";
+                message += _isDeadlinePassed ? "⚠️ ДЕДЛАЙН ПРОЙДЕН\n" : "✅ ДЕДЛАЙН АКТИВЕН\n";
             }
             else
             {
                 message += "⏰ Дедлайн не установлен\n";
             }
+
+            message += "\n⚡ Используйте команды в меню слева";
 
             var keyboard = new InlineKeyboardMarkup(new[]
             {
@@ -1038,6 +1443,11 @@ namespace order_bot
                 new[]
                 {
                     InlineKeyboardButton.WithCallbackData("⏰ Установить дедлайн", "setDeadline")
+                },
+                new[]
+                {
+                    InlineKeyboardButton.WithCallbackData("💰 Пополнить баланс", "topupBalance"),
+                    InlineKeyboardButton.WithCallbackData("💰 Пополнить всем", "topupAllEmployees")
                 },
                 new[]
                 {
@@ -1050,17 +1460,19 @@ namespace order_bot
 
         private async Task ShowManagerMainMenu(Message msg)
         {
-            var message = "Вы авторизованы как менеджер\n\n";
+            var message = "👑 Вы авторизованы как менеджер\n\n";
 
             if (_deadlineTime != DateTime.MinValue)
             {
                 message += $"⏰ Текущий дедлайн: {_deadlineTime:HH:mm}\n";
-                message += _isDeadlinePassed ? "⚠️ ДЕДЛАЙН СЕГОДНЯ ПРОЙДЕН\n" : "✅ ДЕДЛАЙН ЕЩЕ НЕ НАСТУПИЛ\n";
+                message += _isDeadlinePassed ? "⚠️ ДЕДЛАЙН ПРОЙДЕН\n" : "✅ ДЕДЛАЙН АКТИВЕН\n";
             }
             else
             {
                 message += "⏰ Дедлайн не установлен\n";
             }
+
+            message += "\n⚡ Используйте команды в меню слева";
 
             var keyboard = new InlineKeyboardMarkup(new[]
             {
@@ -1079,6 +1491,11 @@ namespace order_bot
                 },
                 new[]
                 {
+                    InlineKeyboardButton.WithCallbackData("💰 Пополнить баланс", "topupBalance"),
+                    InlineKeyboardButton.WithCallbackData("💰 Пополнить всем", "topupAllEmployees")
+                },
+                new[]
+                {
                     InlineKeyboardButton.WithCallbackData("📊 Запросить отчет", "requestReport")
                 }
             });
@@ -1086,7 +1503,7 @@ namespace order_bot
             await _botClient.SendMessage(msg.Chat, message, replyMarkup: keyboard);
         }
 
-        // 1. Добавление сотрудников
+        // 1. Добавление сотрудников (УПРОЩЕННАЯ ВЕРСИЯ - без офиса)
         private async Task StartAddEmployee(CallbackQuery query)
         {
             if (!_userStates.TryGetValue(query.From.Id, out var userState))
@@ -1095,13 +1512,19 @@ namespace order_bot
                 userState = _userStates[query.From.Id];
             }
 
-            userState.StateType = "adding_employee_name";
+            userState.StateType = "adding_employee_telegram";
+            userState.TempEmployee = new Employee(); // Создаем временный объект сотрудника
             userState.TempData = null;
 
-            await _botClient.SendMessage(query.Message.Chat, "Введите имя нового сотрудника:");
+            await _botClient.SendMessage(query.Message.Chat,
+                "➕ Добавление нового сотрудника\n\n" +
+                "Введите Telegram ID сотрудника (цифровой идентификатор):\n\n" +
+                "ℹ️ Как получить Telegram ID?\n" +
+                "• Попросите сотрудника запустить бота @userinfobot\n" +
+                "• Или используйте ID из сообщений");
         }
 
-        private async Task HandleAddEmployeeName(Message msg)
+        private async Task HandleAddEmployeeTelegramId(Message msg)
         {
             if (!_userStates.TryGetValue(msg.From.Id, out var userState))
             {
@@ -1109,57 +1532,112 @@ namespace order_bot
                 return;
             }
 
-            userState.TempData = msg.Text; // Сохраняем имя
-            userState.StateType = "adding_employee_amount";
+            if (long.TryParse(msg.Text, out long telegramId) && telegramId > 0)
+            {
+                // Проверяем, не существует ли уже сотрудник с таким Telegram ID
+                using (var db = new EmployeesDatabaseManager())
+                {
+                    var existingEmployee = db.GetEmployeeByTelegramId(telegramId);
+                    if (existingEmployee != null)
+                    {
+                        await _botClient.SendMessage(msg.Chat,
+                            $"❌ Сотрудник с Telegram ID {telegramId} уже существует!\n" +
+                            $"👤 Имя: {existingEmployee.Name}\n" +
+                            $"💰 Баланс: {existingEmployee.Amount:C}");
 
-            await _botClient.SendMessage(msg.Chat, $"Имя сотрудника: {msg.Text}\n\nТеперь введите сумму (десятичное число):");
+                        userState.StateType = "main";
+                        await ShowManagerMainMenu(msg);
+                        return;
+                    }
+                }
+
+                userState.TempEmployee.TelegramId = telegramId;
+                userState.StateType = "adding_employee_name";
+
+                await _botClient.SendMessage(msg.Chat,
+                    $"🆔 Telegram ID: {telegramId}\n\n" +
+                    "Теперь введите имя нового сотрудника:");
+            }
+            else
+            {
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Неверный формат Telegram ID.\n" +
+                    "Введите положительное число (например: 123456789):");
+            }
         }
 
-        private async Task HandleAddEmployeeAmount(Message msg)
+        private async Task HandleAddEmployeeName(Message msg)
         {
-            if (!_userStates.TryGetValue(msg.From.Id, out var userState) || string.IsNullOrEmpty(userState.TempData))
+            if (!_userStates.TryGetValue(msg.From.Id, out var userState) || userState.TempEmployee == null)
             {
                 await ShowManagerMainMenu(msg);
                 return;
             }
 
-            if (decimal.TryParse(msg.Text, out decimal amount))
+            if (string.IsNullOrWhiteSpace(msg.Text))
             {
-                string employeeName = userState.TempData;
+                await _botClient.SendMessage(msg.Chat, "❌ Имя не может быть пустым. Введите имя сотрудника:");
+                return;
+            }
+
+            userState.TempEmployee.Name = msg.Text.Trim();
+            userState.StateType = "adding_employee_amount";
+
+            await _botClient.SendMessage(msg.Chat,
+                $"🆔 Telegram ID: {userState.TempEmployee.TelegramId}\n" +
+                $"👤 Имя: {userState.TempEmployee.Name}\n\n" +
+                "Теперь введите начальный баланс (десятичное число):\n" +
+                "Пример: 1000.50");
+        }
+
+        private async Task HandleAddEmployeeAmount(Message msg)
+        {
+            if (!_userStates.TryGetValue(msg.From.Id, out var userState) || userState.TempEmployee == null)
+            {
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (decimal.TryParse(msg.Text, out decimal amount) && amount >= 0)
+            {
+                userState.TempEmployee.Amount = amount;
 
                 try
                 {
+                    // Сохраняем сотрудника в базу данных
                     using (var db = new EmployeesDatabaseManager())
                     {
-                        // Предполагаем, что у EmployeesDatabaseManager есть метод AddEmployee
-                        // Если такого метода нет, нужно его добавить
-                        // Для примера создадим новый Employee и сохраним
-                        var employee = new Employee
-                        {
-                            Name = employeeName,
-                            Amount = amount,
-                            TelegramId = 0 // Telegram ID будет установлен при первой авторизации
-                        };
-
-                        // Здесь должен быть код добавления сотрудника в БД
-                        // Временно выводим информацию
-                        Console.WriteLine($"Добавлен сотрудник: {employeeName}, сумма: {amount}");
+                        db.AddEmployee(userState.TempEmployee);
                     }
 
-                    await _botClient.SendMessage(msg.Chat, $"✅ Сотрудник '{employeeName}' с суммой {amount} успешно добавлен!");
+                    var message = "✅ Сотрудник успешно добавлен!\n\n";
+                    message += $"📋 Данные сотрудника:\n";
+                    message += $"🆔 Telegram ID: {userState.TempEmployee.TelegramId}\n";
+                    message += $"👤 Имя: {userState.TempEmployee.Name}\n";
+                    message += $"💰 Начальный баланс: {amount:C}\n\n";
+                    message += $"✅ Теперь сотрудник может авторизоваться в боте с помощью команды /start";
+
+                    await _botClient.SendMessage(msg.Chat, message);
+
+                    // Сбрасываем состояние и показываем главное меню
                     userState.StateType = "main";
+                    userState.TempEmployee = null;
+                    userState.TempData = null;
                     await ShowManagerMainMenu(msg);
                 }
                 catch (Exception ex)
                 {
-                    await _botClient.SendMessage(msg.Chat, $"❌ Ошибка при добавлении сотрудника: {ex.Message}");
+                    await _botClient.SendMessage(msg.Chat,
+                        $"❌ Ошибка при добавлении сотрудника в базу данных:\n{ex.Message}");
+
                     userState.StateType = "main";
                     await ShowManagerMainMenu(msg);
                 }
             }
             else
             {
-                await _botClient.SendMessage(msg.Chat, "❌ Неверный формат суммы. Пожалуйста, введите десятичное число (например: 1000.50):");
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Неверный формат суммы. Пожалуйста, введите десятичное число (например: 1000.50):");
             }
         }
 
@@ -1186,7 +1664,13 @@ namespace order_bot
                 return;
             }
 
-            string restaurantName = msg.Text;
+            string restaurantName = msg.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(restaurantName))
+            {
+                await _botClient.SendMessage(msg.Chat, "❌ Название ресторана не может быть пустым.");
+                return;
+            }
 
             try
             {
@@ -1203,7 +1687,6 @@ namespace order_bot
                     }
 
                     // Добавляем ресторан через добавление тестового блюда
-                    // Позже можно будет добавить нормальный метод добавления ресторана
                     var testMenuItem = new MenuItem
                     {
                         Restaurant = restaurantName,
@@ -1216,7 +1699,10 @@ namespace order_bot
                     db.DeleteMenuItem(testMenuItem.Id); // Удаляем тестовое блюдо
                 }
 
-                await _botClient.SendMessage(msg.Chat, $"✅ Ресторан '{restaurantName}' успешно добавлен!\n\nТеперь вы можете добавлять блюда для этого ресторана.");
+                await _botClient.SendMessage(msg.Chat,
+                    $"✅ Ресторан '{restaurantName}' успешно добавлен!\n\n" +
+                    $"Теперь вы можете добавлять блюда для этого ресторана через меню '🍽️ Добавить блюдо'.");
+
                 userState.StateType = "main";
                 await ShowManagerMainMenu(msg);
             }
@@ -1239,32 +1725,29 @@ namespace order_bot
 
                     if (restaurants.Count == 0)
                     {
-                        await _botClient.SendMessage(query.Message.Chat, "❌ Нет ресторанов. Сначала добавьте ресторан.");
+                        await _botClient.SendMessage(query.Message.Chat,
+                            "❌ Нет ресторанов. Сначала добавьте ресторан через меню '🏪 Добавить ресторан'.");
                         return;
                     }
 
-                    // Создаем кнопки для выбора ресторана
-                    var buttons = new List<InlineKeyboardButton[]>();
-                    foreach (var restaurant in restaurants)
+                    // Сохраняем список ресторанов во временные данные
+                    if (!_userStates.TryGetValue(query.From.Id, out var userState))
                     {
-                        buttons.Add(new[]
-                        {
-                            InlineKeyboardButton.WithCallbackData($"🏪 {restaurant}", $"additem_{restaurant}")
-                        });
+                        _userStates[query.From.Id] = new UserState();
+                        userState = _userStates[query.From.Id];
                     }
 
-                    buttons.Add(new[]
+                    userState.TempData = string.Join(",", restaurants);
+                    userState.StateType = "adding_menu_item";
+
+                    var message = "Выберите ресторан для добавления блюда:\n\n";
+                    for (int i = 0; i < restaurants.Count; i++)
                     {
-                        InlineKeyboardButton.WithCallbackData("Назад", "backToManagerMain")
-                    });
+                        message += $"{i + 1}. {restaurants[i]}\n";
+                    }
+                    message += "\nВведите номер ресторана:";
 
-                    var keyboard = new InlineKeyboardMarkup(buttons);
-
-                    await _botClient.SendMessage(
-                        query.Message.Chat,
-                        "Выберите ресторан для добавления блюда:",
-                        replyMarkup: keyboard
-                    );
+                    await _botClient.SendMessage(query.Message.Chat, message);
                 }
             }
             catch (Exception ex)
@@ -1281,51 +1764,24 @@ namespace order_bot
                 return;
             }
 
-            // Формат: "Название блюда,Цена,Категория"
-            var parts = msg.Text.Split(',');
-            if (parts.Length != 3)
+            var restaurants = userState.TempData.Split(',');
+
+            if (int.TryParse(msg.Text, out int restaurantIndex) && restaurantIndex > 0 && restaurantIndex <= restaurants.Length)
             {
-                await _botClient.SendMessage(msg.Chat, "❌ Неверный формат. Введите: Название блюда,Цена,Категория\nПример: Пицца Маргарита,450,Основные блюда");
-                return;
+                string restaurantName = restaurants[restaurantIndex - 1];
+                userState.TempData = restaurantName; // Сохраняем выбранный ресторан
+
+                await _botClient.SendMessage(msg.Chat,
+                    $"Выбран ресторан: {restaurantName}\n\n" +
+                    "Введите данные блюда в формате:\n" +
+                    "Название,Цена,Категория\n\n" +
+                    "Пример:\n" +
+                    "Пицца Маргарита,450,Основные блюда");
             }
-
-            string restaurantName = userState.TempData;
-            string itemName = parts[0].Trim();
-
-            if (!decimal.TryParse(parts[1].Trim(), out decimal price))
+            else
             {
-                await _botClient.SendMessage(msg.Chat, "❌ Неверный формат цены. Цена должна быть числом.");
-                return;
-            }
-
-            string category = parts[2].Trim();
-
-            try
-            {
-                using (var db = new MenuDatabaseManager())
-                {
-                    var menuItem = new MenuItem
-                    {
-                        Restaurant = restaurantName,
-                        Name = itemName,
-                        Price = price,
-                        Category = category
-                    };
-
-                    db.AddMenuItem(menuItem);
-                }
-
-                await _botClient.SendMessage(msg.Chat, $"✅ Блюдо '{itemName}' успешно добавлено в ресторан '{restaurantName}'!");
-                userState.StateType = "main";
-                userState.TempData = null;
-                await ShowManagerMainMenu(msg);
-            }
-            catch (Exception ex)
-            {
-                await _botClient.SendMessage(msg.Chat, $"❌ Ошибка при добавлении блюда: {ex.Message}");
-                userState.StateType = "main";
-                userState.TempData = null;
-                await ShowManagerMainMenu(msg);
+                await _botClient.SendMessage(msg.Chat,
+                    $"❌ Неверный номер ресторана. Введите число от 1 до {restaurants.Length}.");
             }
         }
 
@@ -1385,7 +1841,244 @@ namespace order_bot
             }
         }
 
-        // 5. Запрос отчета
+        // 5. Пополнение баланса конкретного сотрудника
+        private async Task StartTopupBalance(CallbackQuery query)
+        {
+            if (!_userStates.TryGetValue(query.From.Id, out var userState))
+            {
+                _userStates[query.From.Id] = new UserState();
+                userState = _userStates[query.From.Id];
+            }
+
+            userState.StateType = "topup_employee_id";
+            userState.TempData = null;
+
+            await _botClient.SendMessage(query.Message.Chat,
+                "💰 Пополнение баланса сотрудника\n\n" +
+                "Введите Telegram ID сотрудника:");
+        }
+
+        private async Task HandleTopupEmployeeId(Message msg)
+        {
+            if (!_userStates.TryGetValue(msg.From.Id, out var userState))
+            {
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (long.TryParse(msg.Text, out long telegramId) && telegramId > 0)
+            {
+                using (var db = new EmployeesDatabaseManager())
+                {
+                    var employee = db.GetEmployeeByTelegramId(telegramId);
+                    if (employee == null)
+                    {
+                        await _botClient.SendMessage(msg.Chat,
+                            $"❌ Сотрудник с Telegram ID {telegramId} не найден.");
+                        userState.StateType = "main";
+                        await ShowManagerMainMenu(msg);
+                        return;
+                    }
+
+                    userState.TempData = telegramId.ToString(); // Сохраняем ID
+                    userState.StateType = "topup_employee_amount";
+
+                    await _botClient.SendMessage(msg.Chat,
+                        $"Сотрудник найден:\n" +
+                        $"👤 Имя: {employee.Name}\n" +
+                        $"💰 Текущий баланс: {employee.Amount:C}\n\n" +
+                        "Введите сумму для пополнения (положительное число):\n" +
+                        "Пример: 500.00");
+                }
+            }
+            else
+            {
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Неверный формат Telegram ID. Введите положительное число:");
+            }
+        }
+
+        private async Task HandleTopupEmployeeAmount(Message msg)
+        {
+            if (!_userStates.TryGetValue(msg.From.Id, out var userState) || string.IsNullOrEmpty(userState.TempData))
+            {
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (decimal.TryParse(msg.Text, out decimal amount) && amount > 0)
+            {
+                long telegramId = long.Parse(userState.TempData);
+
+                try
+                {
+                    using (var db = new EmployeesDatabaseManager())
+                    {
+                        var employee = db.GetEmployeeByTelegramId(telegramId);
+                        if (employee == null)
+                        {
+                            await _botClient.SendMessage(msg.Chat, "❌ Сотрудник не найден.");
+                            userState.StateType = "main";
+                            await ShowManagerMainMenu(msg);
+                            return;
+                        }
+
+                        // Сохраняем старый баланс для сообщения
+                        decimal oldBalance = employee.Amount;
+
+                        // Пополняем баланс
+                        employee.Amount += amount;
+                        db.UpdateEmployee(employee);
+
+                        var message = "✅ Баланс успешно пополнен!\n\n";
+                        message += $"👤 Сотрудник: {employee.Name}\n";
+                        message += $"🆔 Telegram ID: {telegramId}\n";
+                        message += $"💰 Пополнено: +{amount:C}\n";
+                        message += $"📊 Было: {oldBalance:C}\n";
+                        message += $"📈 Стало: {employee.Amount:C}\n\n";
+                        message += $"✅ Операция выполнена успешно!";
+
+                        await _botClient.SendMessage(msg.Chat, message);
+
+                        // Уведомляем сотрудника
+                        try
+                        {
+                            await _botClient.SendMessage(
+                                chatId: telegramId,
+                                text: $"💰 Ваш баланс пополнен!\n" +
+                                      $"Пополнено: +{amount:C}\n" +
+                                      $"Новый баланс: {employee.Amount:C}"
+                            );
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Не удалось уведомить сотрудника {telegramId}: {ex.Message}");
+                        }
+                    }
+
+                    userState.StateType = "main";
+                    userState.TempData = null;
+                    await ShowManagerMainMenu(msg);
+                }
+                catch (Exception ex)
+                {
+                    await _botClient.SendMessage(msg.Chat,
+                        $"❌ Ошибка при пополнении баланса: {ex.Message}");
+
+                    userState.StateType = "main";
+                    await ShowManagerMainMenu(msg);
+                }
+            }
+            else
+            {
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Неверный формат суммы. Введите положительное число (например: 500.00):");
+            }
+        }
+
+        // 6. Пополнение баланса всем сотрудникам
+        private async Task StartTopupAllEmployees(CallbackQuery query)
+        {
+            if (!_userStates.TryGetValue(query.From.Id, out var userState))
+            {
+                _userStates[query.From.Id] = new UserState();
+                userState = _userStates[query.From.Id];
+            }
+
+            userState.StateType = "topup_all_amount";
+            userState.TempData = null;
+
+            await _botClient.SendMessage(query.Message.Chat,
+                "💰 Пополнение баланса ВСЕМ сотрудникам\n\n" +
+                "Введите сумму для пополнения (положительное число):\n" +
+                "Пример: 500.00\n\n" +
+                "⚠️ Внимание: эта операция пополнит баланс ВСЕМ сотрудникам в системе!");
+        }
+
+        private async Task HandleTopupAllEmployeesAmount(Message msg)
+        {
+            if (!_userStates.TryGetValue(msg.From.Id, out var userState))
+            {
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (decimal.TryParse(msg.Text, out decimal amount) && amount > 0)
+            {
+                try
+                {
+                    using (var db = new EmployeesDatabaseManager())
+                    {
+                        var employees = db.GetAllEmployees();
+
+                        if (employees.Count == 0)
+                        {
+                            await _botClient.SendMessage(msg.Chat, "❌ В системе нет сотрудников.");
+                            userState.StateType = "main";
+                            await ShowManagerMainMenu(msg);
+                            return;
+                        }
+
+                        int updatedCount = 0;
+                        decimal totalAdded = 0;
+
+                        // Пополняем баланс всем сотрудникам
+                        foreach (var employee in employees)
+                        {
+                            employee.Amount += amount;
+                            db.UpdateEmployee(employee);
+                            updatedCount++;
+                            totalAdded += amount;
+
+                            // Уведомляем сотрудника
+                            if (employee.TelegramId > 0)
+                            {
+                                try
+                                {
+                                    await _botClient.SendMessage(
+                                        chatId: employee.TelegramId,
+                                        text: $"💰 Ваш баланс пополнен!\n" +
+                                              $"Пополнено: +{amount:C}\n" +
+                                              $"Новый баланс: {employee.Amount:C}"
+                                    );
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Не удалось уведомить сотрудника {employee.Name}: {ex.Message}");
+                                }
+                            }
+                        }
+
+                        var message = "✅ Баланс пополнен всем сотрудникам!\n\n";
+                        message += $"👥 Количество сотрудников: {updatedCount}\n";
+                        message += $"💰 Сумма на сотрудника: +{amount:C}\n";
+                        message += $"💰 Общая пополненная сумма: {totalAdded:C}\n\n";
+                        message += $"✅ Все сотрудники уведомлены о пополнении!";
+
+                        await _botClient.SendMessage(msg.Chat, message);
+                    }
+
+                    userState.StateType = "main";
+                    userState.TempData = null;
+                    await ShowManagerMainMenu(msg);
+                }
+                catch (Exception ex)
+                {
+                    await _botClient.SendMessage(msg.Chat,
+                        $"❌ Ошибка при пополнении баланса: {ex.Message}");
+
+                    userState.StateType = "main";
+                    await ShowManagerMainMenu(msg);
+                }
+            }
+            else
+            {
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Неверный формат суммы. Введите положительное число (например: 500.00):");
+            }
+        }
+
+        // 7. Запрос отчета
         private async Task RequestReport(CallbackQuery query)
         {
             try
@@ -1402,7 +2095,7 @@ namespace order_bot
                     // Отправляем отчет как файл
                     using (var stream = System.IO.File.OpenRead(reportPath))
                     {
-                        await _botClient.SendDocumentAsync(
+                        await _botClient.SendDocument(
                             chatId: query.From.Id,
                             document: InputFile.FromStream(stream, Path.GetFileName(reportPath)),
                             caption: $"📊 Отчет по заказам за {DateTime.Now:dd.MM.yyyy HH:mm}"
@@ -1424,6 +2117,7 @@ namespace order_bot
         {
             _cts?.Cancel();
             _deadlineTimer?.Stop();
+            _midnightTimer?.Stop();
         }
     }
 }

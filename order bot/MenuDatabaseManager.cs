@@ -391,7 +391,76 @@ public class MenuDatabaseManager : IDisposable
             return command.ExecuteNonQuery() > 0;
         }
     }
+    public void ShowAllDatabase()
+    {
+        EnsureConnectionOpen();
 
+        // Получаем все рестораны
+        var restaurants = GetRestaurants();
+
+        if (restaurants.Count == 0)
+        {
+            Console.WriteLine("База данных пуста.");
+            return;
+        }
+
+        Console.WriteLine("\n" + "=".PadRight(90, '='));
+        Console.WriteLine("ПОЛНАЯ БАЗА ДАННЫХ МЕНЮ");
+        Console.WriteLine("=".PadRight(90, '='));
+
+        int totalItemsCount = 0;
+        decimal totalPriceSum = 0;
+
+        // Проходим по всем ресторанам
+        foreach (var restaurant in restaurants)
+        {
+            Console.WriteLine($"\n■ РЕСТОРАН: {restaurant}");
+            Console.WriteLine("-".PadRight(90, '-'));
+
+            // Получаем категории для текущего ресторана
+            var categories = GetCategoriesByRestaurant(restaurant);
+
+            int restaurantItemsCount = 0;
+            decimal restaurantPriceSum = 0;
+
+            // Проходим по всем категориям ресторана
+            foreach (var category in categories)
+            {
+                var items = GetMenuItemsByRestaurantAndCategory(restaurant, category);
+
+                if (items.Count > 0)
+                {
+                    Console.WriteLine($"\n  Категория: {category}");
+                    Console.WriteLine($"  {"Название",-50} {"Цена",-15} {"ID",-10}");
+                    Console.WriteLine("  " + "-".PadRight(75, '-'));
+
+                    foreach (var item in items)
+                    {
+                        Console.WriteLine($"  {item.Name,-50} {item.Price,-15:C} #{item.Id,-8}");
+                        restaurantItemsCount++;
+                        restaurantPriceSum += item.Price;
+                    }
+                }
+            }
+
+            // Итоги по ресторану
+            Console.WriteLine($"\n  Итого по ресторану '{restaurant}':");
+            Console.WriteLine($"  • Блюд: {restaurantItemsCount}");
+            Console.WriteLine($"  • Общая стоимость: {restaurantPriceSum:C}");
+            Console.WriteLine("  " + "~".PadRight(75, '~'));
+
+            totalItemsCount += restaurantItemsCount;
+            totalPriceSum += restaurantPriceSum;
+        }
+
+        // Общие итоги
+        Console.WriteLine("\n" + "=".PadRight(90, '='));
+        Console.WriteLine("ОБЩИЕ ИТОГИ:");
+        Console.WriteLine($"• Всего ресторанов: {restaurants.Count}");
+        Console.WriteLine($"• Всего блюд в базе: {totalItemsCount}");
+        Console.WriteLine($"• Общая стоимость всех блюд: {totalPriceSum:C}");
+        Console.WriteLine("=".PadRight(90, '='));
+    }
     private void EnsureConnectionOpen()
     {
         if (_connection.State != System.Data.ConnectionState.Open)

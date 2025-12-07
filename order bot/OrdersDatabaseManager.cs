@@ -295,7 +295,38 @@ namespace order_bot
 
             return orders;
         }
+        public void ShowAllOrders()
+        {
+            var orders = GetAllOrders();
 
+            if (orders.Count == 0)
+            {
+                Console.WriteLine("База данных заказов пуста.");
+                return;
+            }
+
+            Console.WriteLine("\n" + "=".PadRight(100, '='));
+            Console.WriteLine("ВСЕ ЗАКАЗЫ В БАЗЕ ДАННЫХ");
+            Console.WriteLine("=".PadRight(100, '='));
+            Console.WriteLine($"{"ID",-5} {"Ресторан",-20} {"Название",-30} {"Цена",-10} {"Кол-во",-8} {"Сумма",-10} {"Время создания",-20}");
+            Console.WriteLine("-".PadRight(100, '-'));
+
+            decimal totalRevenue = 0;
+            int totalItems = 0;
+
+            foreach (var order in orders)
+            {
+                decimal orderTotal = order.Price * order.Count;
+                totalRevenue += orderTotal;
+                totalItems += order.Count;
+
+                Console.WriteLine($"{order.Id,-5} {order.Restaurant,-20} {order.Name,-30} {order.Price,-10:C} {order.Count,-8} {orderTotal,-10:C} {"N/A",-20}");
+            }
+
+            Console.WriteLine("-".PadRight(100, '-'));
+            Console.WriteLine($"Итого: {orders.Count} позиций, {totalItems} шт., Общая сумма: {totalRevenue:C}");
+            Console.WriteLine("=".PadRight(100, '='));
+        }
         // Получить общую сумму заказов по ресторану
         public decimal GetTotalRevenueByRestaurant(string restaurant)
         {
