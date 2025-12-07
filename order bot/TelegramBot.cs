@@ -22,7 +22,7 @@ namespace order_bot
         // Класс для хранения состояния пользователя
         private class UserState
         {
-            public string StateType { get; set; } = "main"; // main, restaurant_selection, category_selection, item_selection, adding_employee_telegram, adding_employee_name, adding_employee_amount
+            public string StateType { get; set; } = "main"; // main, restaurant_selection, category_selection, item_selection, adding_employee_telegram, adding_employee_name, adding_employee_amount, adding_restaurant_name, adding_menu_item, adding_menu_item_details, setting_deadline, topup_employee_id, topup_employee_amount, topup_all_amount
             public string SelectedRestaurant { get; set; }
             public string SelectedCategory { get; set; }
             public List<OrderItem> SelectedItems { get; set; } = new List<OrderItem>();
@@ -603,6 +603,21 @@ namespace order_bot
             }
             else if (role == "manager")
             {
+                // ПРОВЕРЯЕМ СОСТОЯНИЕ ДОБАВЛЕНИЯ БЛЮДА
+                if (_userStates.TryGetValue(msg.From.Id, out var userState))
+                {
+                    if (userState.StateType == "adding_menu_item_details")
+                    {
+                        await HandleAddMenuItem(msg);
+                        return;
+                    }
+                    else if (userState.StateType == "adding_menu_item")
+                    {
+                        await HandleAddMenuItemRestaurantSelection(msg);
+                        return;
+                    }
+                }
+
                 await HandleManagerMessage(msg);
             }
             else
@@ -1162,7 +1177,7 @@ namespace order_bot
                     else
                     {
                         message += $"✅ Достаточно средств!\n";
-                        message += $"Останется после оплаты: {employee.Amount - totalPrice:C}\n";
+                        message += $"Останется после оплата: {employee.Amount - totalPrice:C}\n";
                     }
                 }
             }
@@ -1385,6 +1400,11 @@ namespace order_bot
             }
             else if (userState.StateType == "adding_menu_item")
             {
+                await HandleAddMenuItemRestaurantSelection(msg);
+                return;
+            }
+            else if (userState.StateType == "adding_menu_item_details")
+            {
                 await HandleAddMenuItem(msg);
                 return;
             }
@@ -1437,7 +1457,6 @@ namespace order_bot
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("🏪 Добавить ресторан", "addRestaurant"),
                     InlineKeyboardButton.WithCallbackData("🍽️ Добавить блюдо", "addMenuItem")
                 },
                 new[]
@@ -1503,7 +1522,7 @@ namespace order_bot
             await _botClient.SendMessage(msg.Chat, message, replyMarkup: keyboard);
         }
 
-        // 1. Добавление сотрудников (УПРОЩЕННАЯ ВЕРСИЯ - без офиса)
+        // 1. Добавление сотрудников
         private async Task StartAddEmployee(CallbackQuery query)
         {
             if (!_userStates.TryGetValue(query.From.Id, out var userState))
@@ -1521,7 +1540,8 @@ namespace order_bot
                 "Введите Telegram ID сотрудника (цифровой идентификатор):\n\n" +
                 "ℹ️ Как получить Telegram ID?\n" +
                 "• Попросите сотрудника запустить бота @userinfobot\n" +
-                "• Или используйте ID из сообщений");
+                "• Или используйте ID из сообщений\n\n" +
+                "Для отмены введите 'отмена'");
         }
 
         private async Task HandleAddEmployeeTelegramId(Message msg)
@@ -1532,7 +1552,18 @@ namespace order_bot
                 return;
             }
 
-            if (long.TryParse(msg.Text, out long telegramId) && telegramId > 0)
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                userState.TempEmployee = null;
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (long.TryParse(input, out long telegramId) && telegramId > 0)
             {
                 // Проверяем, не существует ли уже сотрудник с таким Telegram ID
                 using (var db = new EmployeesDatabaseManager())
@@ -1556,13 +1587,14 @@ namespace order_bot
 
                 await _botClient.SendMessage(msg.Chat,
                     $"🆔 Telegram ID: {telegramId}\n\n" +
-                    "Теперь введите имя нового сотрудника:");
+                    "Теперь введите имя нового сотрудника:\n" +
+                    "Для отмены введите 'отмена'");
             }
             else
             {
                 await _botClient.SendMessage(msg.Chat,
                     "❌ Неверный формат Telegram ID.\n" +
-                    "Введите положительное число (например: 123456789):");
+                    "Введите положительное число (например: 123456789) или 'отмена' для отмены:");
             }
         }
 
@@ -1574,20 +1606,32 @@ namespace order_bot
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(msg.Text))
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
             {
-                await _botClient.SendMessage(msg.Chat, "❌ Имя не может быть пустым. Введите имя сотрудника:");
+                userState.StateType = "main";
+                userState.TempEmployee = null;
+                await ShowManagerMainMenu(msg);
                 return;
             }
 
-            userState.TempEmployee.Name = msg.Text.Trim();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                await _botClient.SendMessage(msg.Chat, "❌ Имя не может быть пустым. Введите имя сотрудника или 'отмена':");
+                return;
+            }
+
+            userState.TempEmployee.Name = input;
             userState.StateType = "adding_employee_amount";
 
             await _botClient.SendMessage(msg.Chat,
                 $"🆔 Telegram ID: {userState.TempEmployee.TelegramId}\n" +
                 $"👤 Имя: {userState.TempEmployee.Name}\n\n" +
                 "Теперь введите начальный баланс (десятичное число):\n" +
-                "Пример: 1000.50");
+                "Пример: 1000.50\n" +
+                "Для отмены введите 'отмена'");
         }
 
         private async Task HandleAddEmployeeAmount(Message msg)
@@ -1598,7 +1642,18 @@ namespace order_bot
                 return;
             }
 
-            if (decimal.TryParse(msg.Text, out decimal amount) && amount >= 0)
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                userState.TempEmployee = null;
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (decimal.TryParse(input, out decimal amount) && amount >= 0)
             {
                 userState.TempEmployee.Amount = amount;
 
@@ -1623,7 +1678,22 @@ namespace order_bot
                     userState.StateType = "main";
                     userState.TempEmployee = null;
                     userState.TempData = null;
-                    await ShowManagerMainMenu(msg);
+
+                    // Показываем кнопки для дальнейших действий
+                    var successKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[]
+                        {
+                            InlineKeyboardButton.WithCallbackData("➕ Добавить еще сотрудника", "addEmployee"),
+                            InlineKeyboardButton.WithCallbackData("💰 Пополнить баланс", "topupBalance")
+                        },
+                        new[]
+                        {
+                            InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain")
+                        }
+                    });
+
+                    await _botClient.SendMessage(msg.Chat, "Выберите действие:", replyMarkup: successKeyboard);
                 }
                 catch (Exception ex)
                 {
@@ -1637,7 +1707,7 @@ namespace order_bot
             else
             {
                 await _botClient.SendMessage(msg.Chat,
-                    "❌ Неверный формат суммы. Пожалуйста, введите десятичное число (например: 1000.50):");
+                    "❌ Неверный формат суммы. Пожалуйста, введите десятичное число (например: 1000.50) или 'отмена':");
             }
         }
 
@@ -1653,7 +1723,10 @@ namespace order_bot
             userState.StateType = "adding_restaurant_name";
             userState.TempData = null;
 
-            await _botClient.SendMessage(query.Message.Chat, "Введите название нового ресторана:");
+            await _botClient.SendMessage(query.Message.Chat,
+                "🏪 Добавление нового ресторана\n\n" +
+                "Введите название нового ресторана:\n" +
+                "Для отмены введите 'отмена'");
         }
 
         private async Task HandleAddRestaurantName(Message msg)
@@ -1666,9 +1739,19 @@ namespace order_bot
 
             string restaurantName = msg.Text.Trim();
 
+            // Проверка на отмену
+            if (restaurantName.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(restaurantName))
             {
-                await _botClient.SendMessage(msg.Chat, "❌ Название ресторана не может быть пустым.");
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Название ресторана не может быть пустым.\n" +
+                    "Попробуйте еще раз или введите 'отмена':");
                 return;
             }
 
@@ -1680,109 +1763,249 @@ namespace order_bot
                     var restaurants = db.GetRestaurants();
                     if (restaurants.Contains(restaurantName))
                     {
-                        await _botClient.SendMessage(msg.Chat, $"⚠️ Ресторан '{restaurantName}' уже существует.");
+                        await _botClient.SendMessage(msg.Chat,
+                            $"⚠️ Ресторан '{restaurantName}' уже существует.\n\n" +
+                            $"Вы можете добавить блюда для него через меню '🍽️ Добавить блюдо'.");
+
                         userState.StateType = "main";
-                        await ShowManagerMainMenu(msg);
+
+                        var duplicateKeyboard = new InlineKeyboardMarkup(new[]
+                        {
+                            new[]
+                            {
+                                InlineKeyboardButton.WithCallbackData("🍽️ Добавить блюдо", "addMenuItem"),
+                                InlineKeyboardButton.WithCallbackData("🏪 Добавить другой ресторан", "addRestaurant")
+                            },
+                            new[]
+                            {
+                                InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain")
+                            }
+                        });
+
+                        await _botClient.SendMessage(msg.Chat, "Выберите действие:", replyMarkup: duplicateKeyboard);
                         return;
                     }
 
-                    // Добавляем ресторан через добавление тестового блюда
-                    var testMenuItem = new MenuItem
-                    {
-                        Restaurant = restaurantName,
-                        Name = "Тестовое блюдо",
-                        Price = 0,
-                        Category = "Тестовая категория"
-                    };
+                    // Добавляем ресторан
+                    bool success = db.AddRestaurant(restaurantName);
 
-                    db.AddMenuItem(testMenuItem);
-                    db.DeleteMenuItem(testMenuItem.Id); // Удаляем тестовое блюдо
+                    if (success)
+                    {
+                        await _botClient.SendMessage(msg.Chat,
+                            $"✅ Ресторан '{restaurantName}' успешно добавлен!\n\n" +
+                            $"Теперь вы можете:\n" +
+                            $"1. Добавить блюда через меню '🍽️ Добавить блюдо'\n" +
+                            $"2. Сотрудники смогут выбирать этот ресторан при заказе");
+                    }
+                    else
+                    {
+                        await _botClient.SendMessage(msg.Chat,
+                            $"❌ Не удалось добавить ресторан '{restaurantName}'.\n" +
+                            $"Попробуйте еще раз или проверьте логи.");
+                    }
                 }
 
-                await _botClient.SendMessage(msg.Chat,
-                    $"✅ Ресторан '{restaurantName}' успешно добавлен!\n\n" +
-                    $"Теперь вы можете добавлять блюда для этого ресторана через меню '🍽️ Добавить блюдо'.");
-
                 userState.StateType = "main";
-                await ShowManagerMainMenu(msg);
+
+                // Показываем кнопки для дальнейших действий
+                var successKeyboard = new InlineKeyboardMarkup(new[]
+                {
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("🍽️ Добавить блюдо", "addMenuItem"),
+                        InlineKeyboardButton.WithCallbackData("➕ Добавить еще ресторан", "addRestaurant")
+                    },
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain")
+                    }
+                });
+
+                await _botClient.SendMessage(msg.Chat, "Выберите действие:", replyMarkup: successKeyboard);
             }
             catch (Exception ex)
             {
-                await _botClient.SendMessage(msg.Chat, $"❌ Ошибка при добавлении ресторана: {ex.Message}");
+                await _botClient.SendMessage(msg.Chat,
+                    $"❌ Ошибка при добавлении ресторана: {ex.Message}\n\n" +
+                    $"Попробуйте еще раз или обратитесь к разработчику.");
+
                 userState.StateType = "main";
                 await ShowManagerMainMenu(msg);
             }
         }
 
-        // 3. Добавление блюд в меню
+        // 3. Добавление блюд в меню - ПРОСТАЯ ВЕРСИЯ
         private async Task StartAddMenuItem(CallbackQuery query)
         {
-            try
+            if (!_userStates.TryGetValue(query.From.Id, out var userState))
             {
-                using (var db = new MenuDatabaseManager())
-                {
-                    var restaurants = db.GetRestaurants();
-
-                    if (restaurants.Count == 0)
-                    {
-                        await _botClient.SendMessage(query.Message.Chat,
-                            "❌ Нет ресторанов. Сначала добавьте ресторан через меню '🏪 Добавить ресторан'.");
-                        return;
-                    }
-
-                    // Сохраняем список ресторанов во временные данные
-                    if (!_userStates.TryGetValue(query.From.Id, out var userState))
-                    {
-                        _userStates[query.From.Id] = new UserState();
-                        userState = _userStates[query.From.Id];
-                    }
-
-                    userState.TempData = string.Join(",", restaurants);
-                    userState.StateType = "adding_menu_item";
-
-                    var message = "Выберите ресторан для добавления блюда:\n\n";
-                    for (int i = 0; i < restaurants.Count; i++)
-                    {
-                        message += $"{i + 1}. {restaurants[i]}\n";
-                    }
-                    message += "\nВведите номер ресторана:";
-
-                    await _botClient.SendMessage(query.Message.Chat, message);
-                }
+                _userStates[query.From.Id] = new UserState();
+                userState = _userStates[query.From.Id];
             }
-            catch (Exception ex)
-            {
-                await _botClient.SendMessage(query.Message.Chat, $"❌ Ошибка: {ex.Message}");
-            }
+
+            userState.StateType = "adding_menu_item_details";
+            userState.TempData = null;
+
+            await _botClient.SendMessage(query.Message.Chat,
+                "🍽️ Добавление нового блюда\n\n" +
+                "Введите данные в ОДНОЙ строке через запятую:\n" +
+                "**Формат:** Название ресторана, Название блюда, Цена, Категория\n\n" +
+                "**Пример:**\n" +
+                "`Пиццерия Марио, Пицца Маргарита, 450, Основные блюда`\n\n" +
+                "**Еще примеры:**\n" +
+                "`Суши-бар, Ролл Филадельфия, 600, Роллы`\n" +
+                "`Кофейня, Капучино, 150, Напитки`\n" +
+                "`Бургерная, Чизбургер, 300, Бургеры`\n\n" +
+                "ℹ️ **ВАЖНО:** Если ресторана нет - он будет создан автоматически!\n\n" +
+                "Для отмены введите 'отмена'");
         }
 
         private async Task HandleAddMenuItem(Message msg)
         {
-            if (!_userStates.TryGetValue(msg.From.Id, out var userState) || string.IsNullOrEmpty(userState.TempData))
+            if (!_userStates.TryGetValue(msg.From.Id, out var userState))
             {
                 await ShowManagerMainMenu(msg);
                 return;
             }
 
-            var restaurants = userState.TempData.Split(',');
-
-            if (int.TryParse(msg.Text, out int restaurantIndex) && restaurantIndex > 0 && restaurantIndex <= restaurants.Length)
+            try
             {
-                string restaurantName = restaurants[restaurantIndex - 1];
-                userState.TempData = restaurantName; // Сохраняем выбранный ресторан
+                string input = msg.Text.Trim();
 
-                await _botClient.SendMessage(msg.Chat,
-                    $"Выбран ресторан: {restaurantName}\n\n" +
-                    "Введите данные блюда в формате:\n" +
-                    "Название,Цена,Категория\n\n" +
-                    "Пример:\n" +
-                    "Пицца Маргарита,450,Основные блюда");
+                // Проверка на отмену
+                if (input.ToLower() == "отмена")
+                {
+                    userState.StateType = "main";
+                    await ShowManagerMainMenu(msg);
+                    return;
+                }
+
+                // Разбиваем ввод на части
+                var parts = input.Split(',')
+                    .Select(p => p.Trim())
+                    .Where(p => !string.IsNullOrEmpty(p))
+                    .ToArray();
+
+                if (parts.Length != 4)
+                {
+                    await _botClient.SendMessage(msg.Chat,
+                        "❌ Неверный формат данных!\n\n" +
+                        "Должно быть ровно 4 части через запятую:\n" +
+                        "1. Название ресторана\n" +
+                        "2. Название блюда\n" +
+                        "3. Цена (только число)\n" +
+                        "4. Категория\n\n" +
+                        "**Правильный пример:**\n" +
+                        "`Пиццерия Марио, Пицца Маргарита, 450, Основные блюда`\n\n" +
+                        "Попробуйте еще раз или введите 'отмена':");
+                    return;
+                }
+
+                string restaurantName = parts[0];
+                string itemName = parts[1];
+                string priceStr = parts[2];
+                string category = parts[3];
+
+                // Проверяем цену
+                if (!decimal.TryParse(priceStr, out decimal price) || price <= 0)
+                {
+                    await _botClient.SendMessage(msg.Chat,
+                        "❌ Неверная цена! Введите положительное число.\n" +
+                        "Пример: 450 или 150.50\n\n" +
+                        "Попробуйте еще раз или введите 'отмена':");
+                    return;
+                }
+
+                // Добавляем блюдо в базу данных
+                using (var db = new MenuDatabaseManager())
+                {
+                    bool success = db.AddMenuItem(restaurantName, itemName, price, category);
+
+                    if (success)
+                    {
+                        // Проверяем, был ли создан новый ресторан
+                        var restaurants = db.GetRestaurants();
+                        bool isNewRestaurant = restaurants.Contains(restaurantName);
+
+                        if (isNewRestaurant)
+                        {
+                            await _botClient.SendMessage(msg.Chat,
+                                $"✅ Блюдо успешно добавлено!\n" +
+                                $"🏪 **Ресторан создан автоматически:** {restaurantName}\n" +
+                                $"🍽️ Название: {itemName}\n" +
+                                $"💰 Цена: {price:C}\n" +
+                                $"📂 Категория: {category}\n\n" +
+                                $"✅ Теперь сотрудники могут заказывать из нового ресторана!");
+                        }
+                        else
+                        {
+                            await _botClient.SendMessage(msg.Chat,
+                                $"✅ Блюдо успешно добавлено!\n\n" +
+                                $"🏪 Ресторан: {restaurantName}\n" +
+                                $"🍽️ Название: {itemName}\n" +
+                                $"💰 Цена: {price:C}\n" +
+                                $"📂 Категория: {category}\n\n" +
+                                $"✅ Теперь сотрудники могут заказывать это блюдо.");
+                        }
+                    }
+                    else
+                    {
+                        await _botClient.SendMessage(msg.Chat,
+                            $"❌ Не удалось добавить блюдо.\n" +
+                            $"Возможно, такое блюдо уже существует в этой категории.\n\n" +
+                            $"Ресторан: {restaurantName}\n" +
+                            $"Категория: {category}\n\n" +
+                            $"Попробуйте другое название или цену.");
+                    }
+                }
+
+                // Сбрасываем состояние
+                userState.StateType = "main";
+                userState.TempData = null;
+
+                // Показываем главное меню с кнопкой добавления еще
+                var successKeyboard = new InlineKeyboardMarkup(new[]
+                {
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("➕ Добавить еще блюдо", "addMenuItem"),
+                        InlineKeyboardButton.WithCallbackData("🏪 Добавить ресторан", "addRestaurant")
+                    },
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain")
+                    }
+                });
+
+                await _botClient.SendMessage(msg.Chat, "Выберите действие:", replyMarkup: successKeyboard);
             }
-            else
+            catch (Exception ex)
             {
                 await _botClient.SendMessage(msg.Chat,
-                    $"❌ Неверный номер ресторана. Введите число от 1 до {restaurants.Length}.");
+                    $"❌ Произошла ошибка: {ex.Message}\n\n" +
+                    $"Попробуйте еще раз или обратитесь к разработчику.");
+
+                userState.StateType = "main";
+                userState.TempData = null;
+                await ShowManagerMainMenu(msg);
             }
+        }
+
+        // Метод для выбора ресторана (оставляем на всякий случай, но не используем)
+        private async Task HandleAddMenuItemRestaurantSelection(Message msg)
+        {
+            // Этот метод больше не нужен, но оставляем для совместимости
+            await _botClient.SendMessage(msg.Chat,
+                "ℹ️ Используйте новый формат добавления блюд:\n\n" +
+                "Введите: `Название ресторана, Название блюда, Цена, Категория`\n\n" +
+                "Пример: `Пиццерия Марио, Пицца Маргарита, 450, Основные блюда`");
+
+            if (_userStates.TryGetValue(msg.From.Id, out var userState))
+            {
+                userState.StateType = "main";
+            }
+
+            await ShowManagerMainMenu(msg);
         }
 
         // 4. Установка дедлайна
@@ -1801,7 +2024,8 @@ namespace order_bot
                 "Дедлайн не установлен\n";
 
             await _botClient.SendMessage(query.Message.Chat,
-                $"{currentDeadline}\nВведите время дедлайна в формате ЧЧ:ММ (например, 18:30):");
+                $"{currentDeadline}\nВведите время дедлайна в формате ЧЧ:ММ (например, 18:30):\n" +
+                "Для отмены введите 'отмена'");
         }
 
         private async Task HandleSetDeadline(Message msg)
@@ -1812,7 +2036,17 @@ namespace order_bot
                 return;
             }
 
-            if (DateTime.TryParseExact(msg.Text, "HH:mm", null, System.Globalization.DateTimeStyles.None, out DateTime deadline))
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (DateTime.TryParseExact(input, "HH:mm", null, System.Globalization.DateTimeStyles.None, out DateTime deadline))
             {
                 _deadlineTime = new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day,
                     deadline.Hour, deadline.Minute, 0);
@@ -1837,7 +2071,9 @@ namespace order_bot
             }
             else
             {
-                await _botClient.SendMessage(msg.Chat, "❌ Неверный формат времени. Введите время в формате ЧЧ:ММ (например, 18:30):");
+                await _botClient.SendMessage(msg.Chat,
+                    "❌ Неверный формат времени. Введите время в формате ЧЧ:ММ (например, 18:30)\n" +
+                    "Или введите 'отмена' для отмены:");
             }
         }
 
@@ -1855,7 +2091,8 @@ namespace order_bot
 
             await _botClient.SendMessage(query.Message.Chat,
                 "💰 Пополнение баланса сотрудника\n\n" +
-                "Введите Telegram ID сотрудника:");
+                "Введите Telegram ID сотрудника:\n" +
+                "Для отмены введите 'отмена'");
         }
 
         private async Task HandleTopupEmployeeId(Message msg)
@@ -1866,7 +2103,17 @@ namespace order_bot
                 return;
             }
 
-            if (long.TryParse(msg.Text, out long telegramId) && telegramId > 0)
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (long.TryParse(input, out long telegramId) && telegramId > 0)
             {
                 using (var db = new EmployeesDatabaseManager())
                 {
@@ -1888,13 +2135,14 @@ namespace order_bot
                         $"👤 Имя: {employee.Name}\n" +
                         $"💰 Текущий баланс: {employee.Amount:C}\n\n" +
                         "Введите сумму для пополнения (положительное число):\n" +
-                        "Пример: 500.00");
+                        "Пример: 500.00\n" +
+                        "Для отмены введите 'отмена'");
                 }
             }
             else
             {
                 await _botClient.SendMessage(msg.Chat,
-                    "❌ Неверный формат Telegram ID. Введите положительное число:");
+                    "❌ Неверный формат Telegram ID. Введите положительное число или 'отмена':");
             }
         }
 
@@ -1906,7 +2154,18 @@ namespace order_bot
                 return;
             }
 
-            if (decimal.TryParse(msg.Text, out decimal amount) && amount > 0)
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                userState.TempData = null;
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (decimal.TryParse(input, out decimal amount) && amount > 0)
             {
                 long telegramId = long.Parse(userState.TempData);
 
@@ -1958,7 +2217,22 @@ namespace order_bot
 
                     userState.StateType = "main";
                     userState.TempData = null;
-                    await ShowManagerMainMenu(msg);
+
+                    // Показываем кнопки для дальнейших действий
+                    var successKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[]
+                        {
+                            InlineKeyboardButton.WithCallbackData("💰 Пополнить еще", "topupBalance"),
+                            InlineKeyboardButton.WithCallbackData("💰 Пополнить всем", "topupAllEmployees")
+                        },
+                        new[]
+                        {
+                            InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain")
+                        }
+                    });
+
+                    await _botClient.SendMessage(msg.Chat, "Выберите действие:", replyMarkup: successKeyboard);
                 }
                 catch (Exception ex)
                 {
@@ -1972,7 +2246,7 @@ namespace order_bot
             else
             {
                 await _botClient.SendMessage(msg.Chat,
-                    "❌ Неверный формат суммы. Введите положительное число (например: 500.00):");
+                    "❌ Неверный формат суммы. Введите положительное число (например: 500.00) или 'отмена':");
             }
         }
 
@@ -1992,7 +2266,8 @@ namespace order_bot
                 "💰 Пополнение баланса ВСЕМ сотрудникам\n\n" +
                 "Введите сумму для пополнения (положительное число):\n" +
                 "Пример: 500.00\n\n" +
-                "⚠️ Внимание: эта операция пополнит баланс ВСЕМ сотрудникам в системе!");
+                "⚠️ Внимание: эта операция пополнит баланс ВСЕМ сотрудникам в системе!\n" +
+                "Для отмена введите 'отмена'");
         }
 
         private async Task HandleTopupAllEmployeesAmount(Message msg)
@@ -2003,7 +2278,17 @@ namespace order_bot
                 return;
             }
 
-            if (decimal.TryParse(msg.Text, out decimal amount) && amount > 0)
+            string input = msg.Text.Trim();
+
+            // Проверка на отмену
+            if (input.ToLower() == "отмена")
+            {
+                userState.StateType = "main";
+                await ShowManagerMainMenu(msg);
+                return;
+            }
+
+            if (decimal.TryParse(input, out decimal amount) && amount > 0)
             {
                 try
                 {
@@ -2060,7 +2345,22 @@ namespace order_bot
 
                     userState.StateType = "main";
                     userState.TempData = null;
-                    await ShowManagerMainMenu(msg);
+
+                    // Показываем кнопки для дальнейших действий
+                    var successKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[]
+                        {
+                            InlineKeyboardButton.WithCallbackData("💰 Пополнить конкретного", "topupBalance"),
+                            InlineKeyboardButton.WithCallbackData("💰 Пополнить всем еще раз", "topupAllEmployees")
+                        },
+                        new[]
+                        {
+                            InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain")
+                        }
+                    });
+
+                    await _botClient.SendMessage(msg.Chat, "Выберите действие:", replyMarkup: successKeyboard);
                 }
                 catch (Exception ex)
                 {
@@ -2074,7 +2374,7 @@ namespace order_bot
             else
             {
                 await _botClient.SendMessage(msg.Chat,
-                    "❌ Неверный формат суммы. Введите положительное число (например: 500.00):");
+                    "❌ Неверный формат суммы. Введите положительное число (например: 500.00) или 'отмена':");
             }
         }
 
@@ -2083,6 +2383,9 @@ namespace order_bot
         {
             try
             {
+                // Показываем сообщение о генерации отчета
+                await _botClient.SendMessage(query.Message.Chat, "📊 Генерирую отчет...");
+
                 using (var ordersDb = new OrdersDatabaseManager())
                 {
                     var organizer = new OrderOrganizer(ordersDb);
@@ -2104,11 +2407,21 @@ namespace order_bot
 
                     // Удаляем временный файл
                     File.Delete(reportPath);
+
+                    // Показываем кнопку возврата
+                    var returnKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[] { InlineKeyboardButton.WithCallbackData("🏠 В главное меню", "backToManagerMain") }
+                    });
+
+                    await _botClient.SendMessage(query.Message.Chat, "✅ Отчет успешно сгенерирован и отправлен!", replyMarkup: returnKeyboard);
                 }
             }
             catch (Exception ex)
             {
-                await _botClient.SendMessage(query.Message.Chat, $"❌ Ошибка при генерации отчета: {ex.Message}");
+                await _botClient.SendMessage(query.Message.Chat,
+                    $"❌ Ошибка при генерации отчета: {ex.Message}\n\n" +
+                    $"Попробуйте еще раз или обратитесь к разработчику.");
             }
         }
         #endregion
